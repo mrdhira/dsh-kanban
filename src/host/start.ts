@@ -110,6 +110,18 @@ export function start(ctx: DshHostContext, record: ProbeRecord, rawConfig: unkno
 
   next = importLegacyBoard(handle, config, next);
 
+  // The counts are recorded *after* the import, not before. Reporting `tasks: 0` beside a warning
+  // that says thirteen rows were imported is evidence that contradicts itself — and the probe record
+  // is the one artifact a reader trusts when nothing else works.
+  next = {
+    ...next,
+    board: {
+      ...next.board,
+      rev: boardRevision(handle),
+      tasks: listTasks(handle, { limit: 1 }).total,
+    },
+  };
+
   const mirror = createMirror(config, board);
 
   // The route. `webServer` is optional here so that a composition without it still gets the tools.

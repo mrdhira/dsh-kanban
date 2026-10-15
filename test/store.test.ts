@@ -18,18 +18,24 @@ import {
   boardRevision,
   blockTask,
   cancelSprint,
+  checkSprintWindow,
   closeSprint,
+  computeFlowMetrics,
   countsByState,
   createSprint,
   createTask,
+  cycleTimesFromEvents,
+  cycleTimesFromTasks,
   generateTaskId,
   getTask,
+  importTask,
   listComments,
   listEvents,
   listSprints,
   listTasks,
   listTemplates,
   listViews,
+  moveObservations,
   moveTask,
   purgeTask,
   readBoardTitle,
@@ -40,6 +46,7 @@ import {
   updateTask,
   withWrite,
   writeBoardTitle,
+  writeDow,
 } from '../lib/v1/store/index.js';
 import { AGENT, HUMAN, NOW, newBoard } from './helpers.ts';
 
@@ -136,10 +143,11 @@ test('creating a card records a created event and bumps the board revision', () 
 
 test('a card may be created with a template-shaped starting point', () => {
   const board = newBoard();
+  // The human, because a priority is theirs — the agent case is pinned separately, just below.
   const card = createTask(
     board,
     { title: 'something broke', priority: 'p1-high', tags: ['bug'], dor: ['outcome'] },
-    { actor: AGENT, now: NOW }
+    { actor: HUMAN, now: NOW }
   );
   assert.equal(card.priority, 'p1-high');
   assert.deepEqual(card.tags, ['bug']);
@@ -172,8 +180,26 @@ test('refused: an agent may not create an expedite card', () => {
   const board = newBoard();
   assert.throws(
     () => createTask(board, { title: 'x', classOfService: 'expedite' }, { actor: AGENT, now: NOW }),
-    InvalidError
+    (error: unknown) => error instanceof PolicyViolation && error.policyCode === 'human-only'
   );
+  board.close();
+});
+
+test('refused: an agent may not create a prioritised card', () => {
+  // The same gate as an edit. Without it, an agent cannot *change* a priority and can simply create
+  // one — which is how a blocker shipped: the create path never called `checkEdit`.
+  const board = newBoard();
+  for (const priority of ['p0-critical', 'p1-high', 'p3-low', 'p4-someday'] as const) {
+    assert.throws(
+      () => createTask(board, { title: 'x', priority }, { actor: AGENT, now: NOW }),
+      (error: unknown) => error instanceof PolicyViolation && error.policyCode === 'human-only',
+      `${priority} should be refused to an agent`
+    );
+  }
+  // The default is not a choice, so it is allowed.
+  assert.equal(createTask(board, { title: 'plain' }, { actor: AGENT, now: NOW }).priority, 'p2-normal');
+  // And the human may of course choose one.
+  assert.equal(createTask(board, { title: 'urgent', priority: 'p0-critical' }, { actor: HUMAN, now: NOW }).priority, 'p0-critical');
   board.close();
 });
 
@@ -603,5 +629,134 @@ test('listing sprints is newest-first', () => {
     listSprints(board).map((sprint) => sprint.name),
     ['two', 'one']
   );
+  board.close();
+});
+
+// ------------------------------------------------------------------ the Definition of Workflow
+
+test('refused: a WIP limit that is not a whole number, which is how WIP control was disabled', () => {
+  const board = newBoard();
+  // `wip['in-progress'] = 'x'` made every limit comparison false, so the column was unbounded.
+  assert.throws(
+    () => writeDow(board, { ...readDow(board), wip: { 'in-progress': 'x' as never, review: 1 } }),
+    InvalidError
+  );
+  assert.equal(readDow(board).wip['in-progress'], 2, 'the stored definition is untouched');
+  board.close();
+});
+
+test('refused: a Definition of Ready that is present and wrong, and one that is empty', () => {
+  const board = newBoard();
+  // `null` is a *present* value and is refused; `undefined` means "not mentioned" and preserves the
+  // stored one, which is what stops a partial update from erasing a gate. The wedge the reviewer
+  // found was `undefined` reaching `missingChecks` — a JSON `null` on the wire — so both shapes are
+  // pinned: the one that must be refused, and the one that must be harmless.
+  assert.throws(() => writeDow(board, { ...readDow(board), dor: null as never }), InvalidError);
+  assert.throws(() => writeDow(board, { ...readDow(board), dor: [] }), InvalidError, 'an empty gate is not a gate');
+  assert.throws(() => writeDow(board, { ...readDow(board), dod: ['wibble' as never] }), InvalidError);
+
+  const unchanged = readDow(board);
+  assert.deepEqual([...unchanged.dor], ['outcome', 'acceptance', 'write-scope', 'estimate']);
+  // An absent `dor` is not a problem to fix: the stored checklist survives untouched.
+  writeDow(board, { ...unchanged, dor: undefined as never });
+  assert.deepEqual([...readDow(board).dor], ['outcome', 'acceptance', 'write-scope', 'estimate']);
+  board.close();
+});
+
+test('a partial Definition of Workflow update keeps everything it did not mention', () => {
+  const board = newBoard();
+  writeDow(board, { ...readDow(board), wip: { 'in-progress': 1, review: 1 } });
+  const after = readDow(board);
+  assert.equal(after.wip['in-progress'], 1);
+  assert.deepEqual([...after.dor], ['outcome', 'acceptance', 'write-scope', 'estimate'], 'the DoR survived');
+  assert.equal(after.policies.backlog.length > 0, true, 'the policies survived');
+  board.close();
+});
+
+test('refused: an unknown field in the Definition of Workflow is rejected rather than stored', () => {
+  const board = newBoard();
+  assert.throws(() => writeDow(board, { ...readDow(board), readyCap: 0.5 as never }), InvalidError);
+  assert.throws(() => writeDow(board, { ...readDow(board), sle: { p: 1.5, days: 3, source: 'guess' } }), InvalidError);
+  assert.throws(() => writeDow(board, { ...readDow(board), policies: { wibble: 'x' } as never }), InvalidError);
+  assert.throws(() => writeDow(board, 'wibble' as never), InvalidError);
+  board.close();
+});
+
+// ------------------------------------------------------------------ the import's honesty
+
+test('an imported finished row has no invented start or finish, so the metrics stay honest', () => {
+  const board = newBoard();
+  importTask(board, { id: 'T-900', title: 'an old finished row', state: 'done' }, { actor: HUMAN, now: NOW });
+  const card = getTask(board, 'T-900');
+  assert.equal(card?.state, 'done');
+  assert.equal(card?.startedAt, null, 'we do not know when it started');
+  assert.equal(card?.finishedAt, null, 'we do not know when it finished');
+
+  const listed = listTasks(board, { limit: 10 });
+  const metrics = computeFlowMetrics({ tasks: listed.tasks, now: NOW, dow: readDow(board), boardRev: 1 });
+  assert.equal(metrics.throughput.days7, 0, 'a card with an unknown finish is not throughput');
+  assert.equal(metrics.cycle.count, 0, 'and it has no cycle time to report');
+  assert.deepEqual(cycleTimesFromTasks(listed.tasks), [], 'the columns agree');
+  assert.deepEqual(cycleTimesFromEvents(moveObservations(board)), [], 'and so does the event log');
+  board.close();
+});
+
+test('an imported card in progress has an unknown start, not today as a start', () => {
+  const board = newBoard();
+  importTask(board, { id: 'T-901', title: 'an old in-progress row', state: 'in-progress' }, { actor: HUMAN, now: NOW });
+  assert.equal(getTask(board, 'T-901')?.startedAt, null);
+  const listed = listTasks(board, { limit: 10 });
+  const metrics = computeFlowMetrics({ tasks: listed.tasks, now: NOW, dow: readDow(board), boardRev: 1 });
+  assert.equal(metrics.wip, 1, 'it is still work in progress');
+  assert.equal(metrics.ages.length, 0, 'but its age is unknown rather than zero');
+  board.close();
+});
+
+// ------------------------------------------------------------------ sprint edges
+
+test('refused: a sprint longer than a month by a fraction, and one shorter than a day', () => {
+  // `Math.round` used to accept both of these as 31 and as 1.
+  assert.equal(checkSprintWindow('2026-10-01T00:00:00.000Z', '2026-11-01T09:00:00.000Z').ok, false);
+  assert.equal(checkSprintWindow('2026-10-01T00:00:00.000Z', '2026-10-01T12:00:00.000Z').ok, false);
+  assert.equal(checkSprintWindow('2026-10-01T09:00:00.000Z', '2026-11-01T09:00:00.000Z').ok, true);
+});
+
+test('refused: cancelling a sprint that is closed or already cancelled', () => {
+  const board = newBoard();
+  const sprint = createSprint(board, { name: 'S', goal: '', start: '2026-10-01', end: '2026-10-08' }, { actor: HUMAN, now: NOW });
+  startSprint(board, sprint.id, { actor: HUMAN, now: NOW });
+  closeSprint(board, sprint.id, { actor: HUMAN, now: NOW });
+  assert.throws(() => cancelSprint(board, sprint.id, 'changed my mind', { actor: HUMAN, now: NOW }), InvalidError);
+  board.close();
+});
+
+test('cancelling a sprint clears the unfinished cards, records an event for each, and keeps history', () => {
+  const board = newBoard();
+  const sprint = createSprint(board, { name: 'S', goal: '', start: '2026-10-01', end: '2026-10-08' }, { actor: HUMAN, now: NOW });
+  startSprint(board, sprint.id, { actor: HUMAN, now: NOW });
+
+  const open = createTask(board, { title: 'open', sprintId: sprint.id }, { actor: HUMAN, now: NOW });
+  const shipped = createTask(board, { title: 'shipped', sprintId: sprint.id }, { actor: HUMAN, now: NOW });
+  refine(board, shipped.id);
+  moveTask(board, { id: shipped.id, toState: 'in-progress' }, { actor: HUMAN, now: NOW });
+  completeDod(board, shipped.id);
+  moveTask(board, { id: shipped.id, toState: 'done' }, { actor: HUMAN, now: NOW });
+
+  cancelSprint(board, sprint.id, 'the goal became obsolete', { actor: HUMAN, now: NOW });
+  assert.equal(getTask(board, open.id)?.sprintId, null, 'the open card is released');
+  assert.equal(getTask(board, shipped.id)?.sprintId, sprint.id, 'the finished card keeps its history');
+  assert.equal(listEvents(board, { taskId: open.id }).some((event) => event.kind === 'updated'), true, 'and the change is an event');
+  board.close();
+});
+
+// ------------------------------------------------------------------ filters
+
+test('a tag filter treats LIKE wildcards literally', () => {
+  const board = newBoard();
+  createTask(board, { title: 'tagged', tags: ['metrics'] }, { actor: HUMAN, now: NOW });
+  createTask(board, { title: 'odd tag', tags: ['%'] }, { actor: HUMAN, now: NOW });
+  assert.equal(listTasks(board, { tag: 'metrics' }).total, 1);
+  assert.equal(listTasks(board, { tag: '%' }).total, 1, '% must match the literal tag, not everything');
+  assert.equal(listTasks(board, { tag: 'metric' }).total, 0, 'and it is still an exact-ish match');
   board.close();
 });

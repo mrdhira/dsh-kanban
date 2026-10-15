@@ -275,16 +275,37 @@ export function createTools(deps: ToolDeps): DshToolDefinition[] {
     execute: async (args, exec) => {
       const input = (args ?? {}) as Record<string, unknown>;
       const board = deps.board();
+      const actor = actorOf(exec);
       const templates = listTemplates(board);
       const chosen = typeof input.template === 'string' ? templates.find((entry) => entry.id === input.template) : undefined;
       if (typeof input.template === 'string' && chosen === undefined) {
         throw new Error(`no template ${input.template}; known: ${templates.map((entry) => entry.id).join(', ')}`);
       }
+
+      // A template's priority is the human's, like any other priority. Rather than refuse the whole
+      // card, the two human-only fields are dropped for an agent and **reported in the answer** — so
+      // `bugfix` still brings its tags and its prose, the card is visibly at the default priority,
+      // and the model is told to propose the p1 in a comment. An explicit `priority` argument is a
+      // different thing: that is refused loudly by the store's own gate.
+      const fromTemplate: Record<string, unknown> = chosen === undefined ? {} : { ...(chosen.patch as Record<string, unknown>) };
+      const dropped: string[] = [];
+      if (actor.kind !== 'human') {
+        // Only what the gate would refuse: a template that already says `standard` is not a choice
+        // an agent is making, and reporting a drop that did not happen would be noise.
+        const defaults: Record<string, unknown> = { priority: 'p2-normal', classOfService: 'standard' };
+        for (const field of ['priority', 'classOfService'] as const) {
+          if (fromTemplate[field] !== undefined && fromTemplate[field] !== defaults[field]) {
+            dropped.push(`${field}=${String(fromTemplate[field])}`);
+            delete fromTemplate[field];
+          }
+        }
+      }
+
       const task = createTask(
         board,
         {
           title: typeof input.title === 'string' ? input.title : '',
-          ...(chosen === undefined ? {} : (chosen.patch as Record<string, never>)),
+          ...fromTemplate,
           ...(typeof input.outcome === 'string' ? { outcome: input.outcome } : {}),
           ...(typeof input.acceptance === 'string' ? { acceptance: input.acceptance } : {}),
           ...(typeof input.description === 'string' ? { description: input.description } : {}),
@@ -296,10 +317,14 @@ export function createTools(deps: ToolDeps): DshToolDefinition[] {
           ...(typeof input.estimate === 'number' ? { estimate: input.estimate } : {}),
           ...(typeof input.folder === 'string' ? { folder: input.folder } : {}),
         },
-        { actor: actorOf(exec), now: new Date() }
+        { actor, now: new Date() }
       );
       deps.mirror();
-      return json({ id: task.id, card: `${task.id} created in backlog: ${task.title}`, task: json(task) });
+      const note =
+        dropped.length === 0
+          ? ''
+          : ` · template ${dropped.join(', ')} dropped: the human sets those (propose it in a comment)`;
+      return json({ id: task.id, card: `${task.id} created in backlog: ${task.title}${note}`, task: json(task) });
     },
   };
 

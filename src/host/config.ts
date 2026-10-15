@@ -18,13 +18,27 @@ export interface KanbanConfig {
   readonly importTodoMd: boolean;
 }
 
-export const DEFAULT_CONFIG: KanbanConfig = {
-  dbPath: defaultBoardPath(),
-  mirrorPath: defaultMirrorPath(),
-  mirror: true,
-  pollMs: 5000,
-  importTodoMd: true,
-};
+/**
+ * The defaults, resolved **per call**.
+ *
+ * Not a module-level constant, and that is the whole point: `defaultBoardPath()` reads `DSH_HOME`,
+ * so an object built at import time freezes the paths to whatever the home was then. In the app that
+ * happens to be harmless — one process, one home, set before the plugin loads — and everywhere else
+ * it is a silent misdirection: the panel reports one board while the store writes another. The
+ * module-load version of this cost an afternoon of debugging a test that failed for a reason that
+ * had nothing to do with the code under test.
+ *
+ * The lesson generalises: **a default derived from the environment must be derived when it is used.**
+ */
+export function defaultConfig(): KanbanConfig {
+  return {
+    dbPath: defaultBoardPath(),
+    mirrorPath: defaultMirrorPath(),
+    mirror: true,
+    pollMs: 5000,
+    importTodoMd: true,
+  };
+}
 
 export interface ConfigReport {
   readonly config: KanbanConfig;
@@ -60,13 +74,16 @@ export function readConfig(raw: unknown): ConfigReport {
     return fallback;
   };
 
+  // Resolved once, at the moment the config is read — not at module load. See `defaultConfig`.
+  const defaults = defaultConfig();
+
   return {
     config: {
-      dbPath: string('dbPath', DEFAULT_CONFIG.dbPath),
-      mirrorPath: string('mirrorPath', DEFAULT_CONFIG.mirrorPath),
-      mirror: boolean('mirror', DEFAULT_CONFIG.mirror),
-      pollMs: integer('pollMs', DEFAULT_CONFIG.pollMs, 500, 120_000),
-      importTodoMd: boolean('importTodoMd', DEFAULT_CONFIG.importTodoMd),
+      dbPath: string('dbPath', defaults.dbPath),
+      mirrorPath: string('mirrorPath', defaults.mirrorPath),
+      mirror: boolean('mirror', defaults.mirror),
+      pollMs: integer('pollMs', defaults.pollMs, 500, 120_000),
+      importTodoMd: boolean('importTodoMd', defaults.importTodoMd),
     },
     warnings,
   };

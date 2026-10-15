@@ -244,8 +244,11 @@ function buildFilter(filter: TaskFilter | undefined): { where: string; params: S
     clauses.push(filter.blocked ? 'blocked_reason IS NOT NULL' : 'blocked_reason IS NULL');
   }
   if (filter?.tag !== undefined) {
-    clauses.push("tags LIKE ?");
-    params.push(`%"${filter.tag}"%`);
+    // `%` and `_` are LIKE wildcards, so a tag of `%` would match every tagged card. Escaped, with
+    // the escape clause declared — parameterisation stops injection, not wildcard semantics.
+    const escaped = filter.tag.replace(/[\\%_]/g, (character) => `\\${character}`);
+    clauses.push("tags LIKE ? ESCAPE '\\'");
+    params.push(`%"${escaped}"%`);
   }
   if (filter?.search !== undefined && filter.search.trim().length > 0) {
     const needle = `%${filter.search.trim()}%`;
@@ -412,8 +415,16 @@ function insertTask(board: Board, input: InsertInput, options: MutationOptions):
   const at = nowIso(options);
   const by = actorId(options.actor);
   const state = input.state;
-  const started = (WIP_STATES as readonly string[]).includes(state) || state === 'done' ? at : null;
-  const finished = state === 'done' ? at : null;
+  // **No invented timestamps.** An earlier version stamped `started_at = finished_at = now` on any
+  // row inserted directly as `done`, which is exactly what the importer does — so eleven legacy
+  // cards were born with a zero-length cycle time and the generated view advertised
+  // "Throughput 11 in 7 days · Cycle time median 0d · SLE (history, from 11 finished)" while the
+  // event log held two moves. A card's started and finished points are written by the one place that
+  // *moves* a card; a row that arrives already finished has an unknown history, and unknown is what
+  // `null` means. `finished_at` null also keeps it out of throughput and cycle time, which is the
+  // honest answer: we do not know when it finished.
+  const started = null;
+  const finished = null;
   const dorChecks: Record<string, Check> = {};
   for (const checkId of input.dor ?? []) dorChecks[checkId] = { at, by };
 
@@ -487,9 +498,16 @@ export function createTask(board: Board, input: CreateTaskInput, options: Create
   const classOfService = input.classOfService ?? 'standard';
   if (!isPriority(priority)) throw new InvalidError(`unknown priority ${JSON.stringify(priority)}`);
   if (!isClassOfService(classOfService)) throw new InvalidError(`unknown class of service ${JSON.stringify(classOfService)}`);
-  if (input.classOfService === 'expedite' && options.actor.kind !== 'human') {
-    throw new InvalidError('only the human may create an expedite card');
-  }
+  // The same gate as an edit, applied to the values a *new* card would start from. Without this, an
+  // agent cannot change a priority to p0 and can simply create a card that is p0 — and a seeded
+  // template's patch (`bugfix` carries `p1-high`) is a priority grant by another name. A rule that
+  // guards only the update path is not a rule about priorities; it is a rule about updates.
+  const verdict = checkEdit({
+    current: { priority: 'p2-normal', classOfService: 'standard' },
+    patch: { priority, classOfService },
+    actor: options.actor,
+  });
+  if (!verdict.ok) throw new PolicyViolation(verdict);
 
   const requestedState = input.state ?? 'backlog';
   if (!(STATES as readonly string[]).includes(requestedState)) {
@@ -555,7 +573,7 @@ export function updateTask(board: Board, id: string, patch: TaskPatch, options: 
       throw new ConflictError('task', id, current);
     }
 
-    const verdict = checkEdit({ task: current, patch, actor: options.actor });
+    const verdict = checkEdit({ current, patch, actor: options.actor });
     if (!verdict.ok) throw new PolicyViolation(verdict);
 
     if (patch.title !== undefined && patch.title.trim().length === 0) {
@@ -995,21 +1013,48 @@ export function closeSprint(board: Board, id: string, options: MutationOptions):
   });
 }
 
-/** Cancel a sprint — human-only, for the same reason the Scrum Guide gives the Product Owner. */
+/**
+ * Cancel a sprint — human-only, for the same reason the Scrum Guide gives the Product Owner.
+ *
+ * Cancelling clears the sprint from the **unfinished** cards and leaves the finished ones alone:
+ * which sprint a finished card was completed in is history, and a cancellation does not rewrite
+ * history. Each cleared card gets an `updated` event, because the "one row plus one event" invariant
+ * is what makes the metrics auditable — a silent `UPDATE` is a change nobody can account for.
+ */
 export function cancelSprint(board: Board, id: string, reason: string, options: MutationOptions): Sprint {
   if (options.actor.kind !== 'human') throw new InvalidError('only the human may cancel a sprint');
   if (reason.trim().length === 0) throw new InvalidError('cancelling a sprint requires a reason');
   return withWrite(board, () => {
     const sprint = getSprint(board, id);
     if (sprint === undefined) throw new NotFoundError('sprint', id);
+    if (sprint.state === 'closed' || sprint.state === 'cancelled') {
+      throw new InvalidError(`sprint ${id} is ${sprint.state}; only a planning or an active sprint can be cancelled`);
+    }
+
     const at = nowIso(options);
-    query<{ id: string }>(board, 'SELECT id FROM tasks WHERE sprint_id = ?', [id]).forEach((row) => {
+    const by = actorId(options.actor);
+    const carried = query<{ id: string; state: string }>(
+      board,
+      "SELECT id, state FROM tasks WHERE sprint_id = ? AND state NOT IN ('done', 'dropped')",
+      [id]
+    );
+    for (const row of carried) {
       execute(board, 'UPDATE tasks SET sprint_id = NULL, rev = rev + 1, updated_at = ?, updated_by = ? WHERE id = ?', [
         at,
-        actorId(options.actor),
+        by,
         row.id,
       ]);
-    });
+      appendEvent(board, {
+        at,
+        actor: by,
+        taskId: row.id,
+        kind: 'updated',
+        fromState: row.state as State,
+        toState: row.state as State,
+        payload: { sprint: null, reason: `sprint ${id} cancelled: ${reason.trim()}` },
+      });
+    }
+
     execute(board, "UPDATE sprints SET state = 'cancelled', closed_at = ? WHERE id = ?", [at, id]);
     bumpBoardRev(board);
     return getSprint(board, id) as Sprint;

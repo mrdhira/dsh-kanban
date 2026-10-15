@@ -18,7 +18,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
-import { DEFAULT_DOW, type DefinitionOfWorkflow } from './types.js';
+import { DEFAULT_DOW, DOD_CHECKS, DOR_CHECKS, STATES, type CheckId, type DefinitionOfWorkflow } from './types.js';
 import { MIGRATIONS, SCHEMA_VERSION, SEED_TEMPLATES, SEED_VIEWS } from './schema.js';
 import { InvalidError } from './errors.js';
 
@@ -237,8 +237,96 @@ export function readDow(board: Board): DefinitionOfWorkflow {
   }
 }
 
+/**
+ * Validate a Definition of Workflow before it is stored.
+ *
+ * The DoW *is* the control — the WIP limits, the gates and the state policies all read from it — so
+ * writing an unvalidated one over HTTP was the same as disabling WIP control: `wip['in-progress'] =
+ * 'x'` made the limit comparison always false, and `dor: undefined` made every move throw a
+ * `TypeError` from `missingChecks`. Both were reachable with no actor gate at all.
+ *
+ * Every field falls back to the current value when it is absent, so a partial update cannot erase
+ * the policies it did not mention, and anything present must be exactly right or the whole write is
+ * refused. A board with a half-applied Definition of Workflow is worse than one that rejected the
+ * edit.
+ */
+export function validateDow(candidate: unknown, fallback: DefinitionOfWorkflow): DefinitionOfWorkflow {
+  if (typeof candidate !== 'object' || candidate === null) {
+    throw new InvalidError('the Definition of Workflow must be an object');
+  }
+  const source = candidate as Record<string, unknown>;
+  const record = (value: unknown): Record<string, unknown> =>
+    typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {};
+
+  const wipSource = record(source.wip);
+  const wip: Record<'in-progress' | 'review', number> = { ...fallback.wip };
+  for (const state of ['in-progress', 'review'] as const) {
+    const value = wipSource[state];
+    if (value === undefined) continue;
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > 99) {
+      throw new InvalidError(`dow.wip["${state}"] must be a whole number of cards between 0 and 99`);
+    }
+    wip[state] = value;
+  }
+
+  const readyCapValue = source.readyCap;
+  let readyCap = fallback.readyCap;
+  if (readyCapValue !== undefined) {
+    if (typeof readyCapValue !== 'number' || !Number.isInteger(readyCapValue) || readyCapValue < 0 || readyCapValue > 999) {
+      throw new InvalidError('dow.readyCap must be a whole number of cards between 0 and 999');
+    }
+    readyCap = readyCapValue;
+  }
+
+  const sleSource = record(source.sle);
+  const p = sleSource.p === undefined ? fallback.sle.p : sleSource.p;
+  const days = sleSource.days === undefined ? fallback.sle.days : sleSource.days;
+  if (typeof p !== 'number' || !(p > 0) || !(p <= 1)) {
+    throw new InvalidError('dow.sle.p must be a probability greater than 0 and at most 1');
+  }
+  if (typeof days !== 'number' || !Number.isInteger(days) || days < 1 || days > 365) {
+    throw new InvalidError('dow.sle.days must be a whole number of days between 1 and 365');
+  }
+  const source_ = sleSource.source;
+  const sleSourceName: 'history' | 'guess' = source_ === 'history' || source_ === 'guess' ? source_ : fallback.sle.source;
+
+  const checks = (value: unknown, allowed: readonly CheckId[], name: string): readonly CheckId[] => {
+    if (value === undefined) return name === 'dor' ? fallback.dor : fallback.dod;
+    if (!Array.isArray(value)) throw new InvalidError(`dow.${name} must be an array of checklist ids`);
+    const list: CheckId[] = [];
+    for (const entry of value) {
+      if (typeof entry !== 'string' || !(allowed as readonly string[]).includes(entry)) {
+        throw new InvalidError(`dow.${name} contains ${JSON.stringify(entry)}, which is not a known check`);
+      }
+      list.push(entry as CheckId);
+    }
+    if (list.length === 0) throw new InvalidError(`dow.${name} must keep at least one check, or the gate is not a gate`);
+    return list;
+  };
+
+  const policiesSource = record(source.policies);
+  const policies: Record<string, string> = { ...fallback.policies };
+  for (const [state, text] of Object.entries(policiesSource)) {
+    if (!(STATES as readonly string[]).includes(state)) {
+      throw new InvalidError(`dow.policies names ${JSON.stringify(state)}, which is not a board state`);
+    }
+    if (typeof text !== 'string') throw new InvalidError(`dow.policies["${state}"] must be a string`);
+    policies[state] = text;
+  }
+
+  return {
+    wip,
+    readyCap,
+    sle: { p, days, source: sleSourceName },
+    policies: policies as DefinitionOfWorkflow['policies'],
+    dor: checks(source.dor, DOR_CHECKS, 'dor'),
+    dod: checks(source.dod, DOD_CHECKS, 'dod'),
+  };
+}
+
+/** Write the Definition of Workflow, **after** validating it. There is no other way in. */
 export function writeDow(board: Board, dow: DefinitionOfWorkflow): void {
-  writeMeta(board, 'dow', JSON.stringify(dow));
+  writeMeta(board, 'dow', JSON.stringify(validateDow(dow, readDow(board))));
 }
 
 /** The next free position at the end of a column. */

@@ -87,19 +87,27 @@ export function daysBetween(fromIso: string, toIso: string): number {
   return (Date.parse(toIso) - Date.parse(fromIso)) / 86_400_000;
 }
 
-/** The Scrum Guide's timebox: a sprint is one month or less, and has a positive length. */
+/**
+ * The Scrum Guide's timebox: a sprint is one month or less, and has a positive length.
+ *
+ * **No rounding.** `Math.round` accepted a 31.375-day sprint as 31 days and a twelve-hour sprint as
+ * one — the invariant is an exact duration, and rounding it is how a rule that reads as enforced
+ * stops being true at the boundary. The number in the message is the real one, so a refusal is
+ * actionable rather than approximate.
+ */
 export function checkSprintWindow(start: string, end: string): PolicyResult {
   const startMs = Date.parse(start);
   const endMs = Date.parse(end);
   if (Number.isNaN(startMs) || Number.isNaN(endMs)) {
     return fail('illegal-transition', 'sprint start and end must both be ISO dates');
   }
-  const days = Math.round((endMs - startMs) / 86_400_000);
-  if (days < 1) return fail('illegal-transition', 'a sprint must be at least one day long');
+  const days = (endMs - startMs) / 86_400_000;
+  const shown = Math.round(days * 1000) / 1000;
+  if (days < 1) return fail('illegal-transition', `a sprint must be at least one day long; got ${shown}`);
   if (days > MAX_SPRINT_DAYS) {
     return fail(
       'illegal-transition',
-      `a sprint may not exceed ${MAX_SPRINT_DAYS} days (the Scrum Guide's "one month or less"); got ${days}`
+      `a sprint may not exceed ${MAX_SPRINT_DAYS} days (the Scrum Guide's "one month or less"); got ${shown}`
     );
   }
   return pass;
@@ -206,7 +214,8 @@ export function checkMove(input: MoveCheckInput): PolicyResult {
 }
 
 export interface EditCheckInput {
-  readonly task: Task;
+  /** The values the patch would be changing *from* — a card's, or the defaults at creation. */
+  readonly current: { readonly priority: Priority; readonly classOfService: ClassOfService };
   readonly patch: TaskPatch;
   readonly actor: Actor;
 }
@@ -218,23 +227,28 @@ export interface EditCheckInput {
  * links, scope, the card's own prose — an agent may maintain, because that is bookkeeping rather
  * than a decision about what matters. A priority is a claim on the human's attention, so an agent
  * may propose one in a comment and may not set one.
+ *
+ * It takes `current` rather than a whole `Task` so that **creation goes through the same gate**. The
+ * first version took a `Task` and was only called from the update path, which left the front door
+ * open: an agent could not change a priority and could simply create the card with one. A gate that
+ * guards one road is not a gate.
  */
 export function checkEdit(input: EditCheckInput): PolicyResult {
-  const { patch, actor } = input;
+  const { patch, actor, current } = input;
 
   if (isHuman(actor)) return pass;
 
-  if (patch.priority !== undefined && patch.priority !== input.task.priority) {
+  if (patch.priority !== undefined && patch.priority !== current.priority) {
     return fail(
       'human-only',
-      `priority is the human's to set: ${input.task.priority} would become ${patch.priority}. Propose it in a comment instead`
+      `priority is the human's to set: ${current.priority} would become ${patch.priority}. Propose it in a comment instead`
     );
   }
 
-  if (patch.classOfService !== undefined && patch.classOfService !== input.task.classOfService) {
+  if (patch.classOfService !== undefined && patch.classOfService !== current.classOfService) {
     return fail(
       'human-only',
-      `class of service is the human's to set: ${input.task.classOfService} would become ${patch.classOfService}`
+      `class of service is the human's to set: ${current.classOfService} would become ${patch.classOfService}`
     );
   }
 

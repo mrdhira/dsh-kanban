@@ -21,6 +21,7 @@ import type { DshIncomingMessage, DshServerResponse, DshWebRoute } from '../type
 import type { Board } from '../store/db.js';
 import {
   ConflictError,
+  InvalidError,
   NotFoundError,
   PolicyViolation,
   StoreError,
@@ -56,7 +57,6 @@ import {
 } from '../store/index.js';
 import { HUMAN, type Actor, type State, type TaskFilter } from '../store/types.js';
 import type { KanbanConfig } from './config.js';
-import type { ProbeRecord } from './probe.js';
 
 /** `webServer.register` route prefix. Everything the panel calls lives under it. */
 export const API_PREFIX = '/api/kanban';
@@ -148,7 +148,7 @@ function num(source: Record<string, unknown>, key: string): number | undefined {
 }
 
 /** The board payload the panel renders, and the ETag the client polls against. */
-function boardPayload(deps: ApiDeps, options: { readonly includeAll: boolean }): Record<string, unknown> {
+function boardPayload(deps: ApiDeps): Record<string, unknown> {
   const board = deps.board();
   const now = new Date();
   const dow = readDow(board);
@@ -169,8 +169,21 @@ function boardPayload(deps: ApiDeps, options: { readonly includeAll: boolean }):
     total: listed.total,
     servedAt: now.toISOString(),
     buildId: deps.buildId,
-    ...(options.includeAll ? {} : {}),
   };
+}
+
+/**
+ * Operations that change the rules, or migrate the board's history, are the human's.
+ *
+ * `set-dow` is the control itself — unauthenticated, it let any actor rewrite the WIP limits or
+ * replace the Definition of Ready with something that makes every move throw — and `import-todo`
+ * writes rows that bypass every gate on purpose, so it is a migration tool rather than a way to
+ * file work. Both are now refused to an agent, and the DoW is validated at the store.
+ */
+function requireHuman(actor: Actor, what: string): void {
+  if (actor.kind !== 'human') {
+    throw new PolicyViolation({ ok: false, code: 'human-only', message: `${what} is the human's to do` });
+  }
 }
 
 /** One mutation, dispatched by `op`. Each handler is a thin, typed wrapper over the repository. */
@@ -216,7 +229,6 @@ function applyOp(
         patch as never,
         expectedRev === undefined ? { actor, now } : { actor, now, expectedRev }
       );
-      deps.mirror();
       return task;
     }
 
@@ -236,7 +248,6 @@ function applyOp(
         },
         { actor, now }
       );
-      deps.mirror();
       return task;
     }
 
@@ -245,7 +256,6 @@ function applyOp(
       const reason = str(payload, 'reason') ?? '';
       if (id === undefined) throw new Error('block needs an id');
       const task = blockTask(board, id, reason, { actor, now });
-      deps.mirror();
       return task;
     }
 
@@ -253,7 +263,6 @@ function applyOp(
       const id = str(payload, 'id');
       if (id === undefined) throw new Error('unblock needs an id');
       const task = unblockTask(board, id, { actor, now });
-      deps.mirror();
       return task;
     }
 
@@ -266,7 +275,6 @@ function applyOp(
         throw new Error('check needs an id, a gate of dor|dod, and a checkId');
       }
       const task = setCheck(board, id, gate, checkId, done, { actor, now });
-      deps.mirror();
       return task;
     }
 
@@ -281,7 +289,6 @@ function applyOp(
       const id = str(payload, 'id');
       if (id === undefined) throw new Error('purge needs an id');
       purgeTask(board, id, { actor, now });
-      deps.mirror();
       return { purged: id };
     }
 
@@ -294,7 +301,6 @@ function applyOp(
         { name: str(payload, 'name') ?? 'Sprint', goal: str(payload, 'goal') ?? '', start, end },
         { actor, now }
       );
-      deps.mirror();
       return sprint;
     }
 
@@ -308,7 +314,6 @@ function applyOp(
       const id = str(payload, 'id');
       if (id === undefined) throw new Error('sprint-close needs an id');
       const result = closeSprint(board, id, { actor, now });
-      deps.mirror();
       return result;
     }
 
@@ -350,21 +355,29 @@ function applyOp(
     }
 
     case 'import-todo': {
+      requireHuman(actor, 'importing a pre-Kanban board');
       const text = str(payload, 'text');
       if (text === undefined) throw new Error('import-todo needs the markdown text');
       const result = importTodoMd(board, text, { actor, now });
-      deps.mirror();
       return result;
     }
 
     case 'set-dow': {
-      const dow = asRecord(payload.dow);
-      writeDow(board, dow as never);
-      deps.mirror();
+      requireHuman(actor, 'changing the Definition of Workflow');
+      const raw = payload.dow;
+      // A non-object is a caller error, not an empty edit: `asRecord` would turn `'wibble'` into
+      // `{}` and the write would quietly succeed while changing nothing.
+      if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+        throw new InvalidError('set-dow needs a `dow` object');
+      }
+      // `writeDow` validates: a partial or malformed DoW is refused rather than stored, because
+      // storing one is indistinguishable from disabling WIP control.
+      writeDow(board, raw as never);
       return readDow(board);
     }
 
     case 'mirror': {
+      // The one op that rewrites the view without moving the revision, so it asks explicitly.
       deps.mirror();
       return { mirrored: true };
     }
@@ -433,7 +446,7 @@ export function createApiHandler(deps: ApiDeps): DshWebRoute['handler'] {
           send(res, 304, '');
           return;
         }
-        sendJson(res, 200, { ok: true, board: boardPayload(deps, { includeAll: true }), rev });
+        sendJson(res, 200, { ok: true, board: boardPayload(deps), rev });
         return;
       }
 
@@ -491,8 +504,16 @@ export function createApiHandler(deps: ApiDeps): DshWebRoute['handler'] {
           return;
         }
         const actor = actorFrom(req);
+        // One place decides whether the generated view needs rewriting: if the mutation moved the
+        // revision, it changed something the view renders. Per-branch `deps.mirror()` calls were how
+        // `create` came to be forgotten, leaving `todo.md` stale after a card was made over HTTP —
+        // which the drift check then reported. Comparing revisions cannot go out of date as ops are
+        // added, and it is the same rule the CLI uses.
+        const revBefore = boardRevision(deps.board());
         const result = applyOp(deps, op, body, actor);
-        sendJson(res, 200, { ok: true, rev: boardRevision(deps.board()), op, result });
+        const revAfter = boardRevision(deps.board());
+        if (revAfter !== revBefore) deps.mirror();
+        sendJson(res, 200, { ok: true, rev: revAfter, op, result });
         return;
       }
 
@@ -502,9 +523,4 @@ export function createApiHandler(deps: ApiDeps): DshWebRoute['handler'] {
       sendJson(res, status, body);
     }
   };
-}
-
-/** The probe summary this module contributes. */
-export function apiProbe(): ProbeRecord['route'] {
-  return { attempted: true, path: `${API_PREFIX}`, registered: false, error: null };
 }

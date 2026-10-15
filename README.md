@@ -87,3 +87,22 @@ A profile plugin **cannot import anything but Node builtins** (`@deepseek-ai/*` 
 a profile directory), which is why the DSH contracts are vendored in `src/types/dsh.ts`, the store is
 our own SQLite, and the browser half talks to the host over this plugin's own HTTP route rather than
 a typed Remote.
+
+## Trust and concurrency, stated precisely
+
+Two claims in this README were too strong before a review took them apart, so they are spelled out
+here rather than implied:
+
+- **Optimistic concurrency is opt-in.** Every mutation accepts an `expectedRev` and refuses a write
+  that carries a stale one; `bin/kanban.mjs`, the tools and the route only send it when the caller
+  does, and the panel always does. A caller that omits it is choosing last-writer-wins. The mechanism
+  is "a rev you supply is checked", not "no write can clobber another".
+- **The CLI is the human's tool and trusts its shell.** `bin/kanban.mjs` defaults to
+  `--actor human`, so an agent that shells out without `--actor agent:<session-id>` is recorded as
+  Dhira and could set a priority or except a gate. There is no way to enforce otherwise from inside
+  the process — an agent with a shell can lie. The gate that *is* enforced is on the agent's proper
+  surface: a tool call carries its session and cannot claim to be the human.
+- **`set-dow` is human-only and validated.** The Definition of Workflow is the control itself, so a
+  malformed one is refused at the store rather than stored: a non-numeric WIP limit used to disable
+  WIP control silently, and a `dor` that was not an array made every move throw. Fields the payload
+  does not mention keep their stored value; a field that is present and wrong refuses the whole write.

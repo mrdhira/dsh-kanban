@@ -276,13 +276,13 @@ test('limitFor names the WIP limit, the queue cap, and nothing else', () => {
 // ------------------------------------------------------------------ the edit gate
 
 test('the human may set a priority', () => {
-  const verdict = checkEdit({ task: makeTask(), patch: { priority: 'p0-critical' }, actor: HUMAN });
+  const verdict = checkEdit({ current: { priority: 'p2-normal', classOfService: 'standard' }, patch: { priority: 'p0-critical' }, actor: HUMAN });
   assert.deepEqual(verdict, { ok: true });
 });
 
 test('an agent may refine prose and assignment', () => {
   const verdict = checkEdit({
-    task: makeTask(),
+    current: { priority: 'p2-normal', classOfService: 'standard' },
     patch: { assignee: 'verifier', outcome: 'the strip shows peak/off', tags: ['metrics'] },
     actor: AGENT,
   });
@@ -290,24 +290,24 @@ test('an agent may refine prose and assignment', () => {
 });
 
 test('an agent may leave the priority untouched', () => {
-  const verdict = checkEdit({ task: makeTask({ priority: 'p2-normal' }), patch: { priority: 'p2-normal' }, actor: AGENT });
+  const verdict = checkEdit({ current: { priority: 'p2-normal', classOfService: 'standard' }, patch: { priority: 'p2-normal' }, actor: AGENT });
   assert.deepEqual(verdict, { ok: true });
 });
 
 test('refused: an agent may not set a priority', () => {
-  const verdict = checkEdit({ task: makeTask(), patch: { priority: 'p0-critical' }, actor: AGENT });
+  const verdict = checkEdit({ current: { priority: 'p2-normal', classOfService: 'standard' }, patch: { priority: 'p0-critical' }, actor: AGENT });
   assert.equal(verdict.ok, false);
   if (!verdict.ok) assert.equal(verdict.code, 'human-only');
 });
 
 test('refused: an agent may not set a class of service', () => {
-  const verdict = checkEdit({ task: makeTask(), patch: { classOfService: 'expedite' }, actor: AGENT });
+  const verdict = checkEdit({ current: { priority: 'p2-normal', classOfService: 'standard' }, patch: { classOfService: 'expedite' }, actor: AGENT });
   assert.equal(verdict.ok, false);
   if (!verdict.ok) assert.equal(verdict.code, 'human-only');
 });
 
 test('refused: an agent may not claim a blocked card is a priority change', () => {
-  const verdict = checkEdit({ task: makeTask(), patch: { priority: 'p1-high' }, actor: { kind: 'plugin', id: 'importer' } });
+  const verdict = checkEdit({ current: { priority: 'p2-normal', classOfService: 'standard' }, patch: { priority: 'p1-high' }, actor: { kind: 'plugin', id: 'importer' } });
   assert.equal(verdict.ok, false);
 });
 

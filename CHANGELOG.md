@@ -63,3 +63,29 @@ First working board. **Not yet released as 1.0.0**: the host half has not reload
   and does not inherit that bridge's browser-session fence. Loopback-only plus the accepted
   single-user trust model is the mitigation; a per-launch token is deferred.
 - No cumulative flow diagram, no right-sidebar tab, no multi-board.
+
+### Fixed after adversarial review (2026-10-15)
+
+Three blockers, all invisible to a green suite because the tests only exercised the happy path:
+
+- **An agent could set a priority by creating a card.** `createTask` gated only `expedite` and never
+  went through `checkEdit`, so `kanban_create {priority: 'p0-critical'}` succeeded, and the `bugfix`
+  template handed an agent `p1-high`. Creation now goes through the same gate as an edit; a
+  template's human-only fields are dropped for an agent **and reported** rather than refusing the
+  card, and an explicit `priority` argument is refused outright.
+- **The import fabricated history.** `insertTask` stamped `started_at = finished_at = now` on any row
+  inserted as `done`, so eleven migrated cards were born with a zero-length cycle time and the
+  generated view advertised *"Throughput 11 in 7 days · Cycle time median 0d · SLE (history)"* while
+  the event log held two moves. Imported rows now carry null timestamps — unknown, and excluded from
+  throughput and cycle time as a result. `scripts/repair-imported-timestamps.mjs` repaired the
+  existing rows on the live board (12 of them), and `import-todo` is now human-only.
+- **`set-dow` was unauthenticated and unvalidated.** It rewrote the Definition of Workflow with no
+  actor gate, so a non-numeric WIP limit disabled WIP control and a malformed `dor` made every move
+  throw. It is human-only now, and `writeDow` validates: absent fields keep their stored value, and a
+  present-but-wrong field refuses the write.
+
+Also fixed: the 31-day sprint window was rounded to the nearest day (so 31.375 days passed) and
+`docs/kanban.md` claimed SQL enforcement the schema never had; `cancelSprint` accepted a closed
+sprint and wrote no events; a tag filter interpolated `%` and `_` as LIKE wildcards; the probe record
+reported `tasks: 0` beside a warning that rows had been imported; and `DEFAULT_CONFIG` computed the
+board paths **once at module load**, freezing them to whatever `DSH_HOME` was at first import.

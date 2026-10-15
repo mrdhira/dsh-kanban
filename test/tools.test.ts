@@ -15,6 +15,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   DEFAULT_DOW,
+  createTask,
   getTask,
   listEvents,
   listTasks,
@@ -160,13 +161,39 @@ test('kanban_create starts in the backlog and is attributed to the session', asy
   board.close();
 });
 
-test('kanban_create accepts a template from kanban_board', async () => {
+test('kanban_create applies a template, and drops the priority a template carries', async () => {
   const board = openBoard(':memory:');
   const list = tools(board);
-  const created = (await call(list, 'kanban_create', { title: 'something broke', template: 'bugfix' })) as { id: string };
+
+  // `bugfix` carries `p1-high`, so an agent taking that template would be setting a priority by
+  // another name. The field is dropped and **said out loud**; the rest of the template still lands.
+  const created = (await call(list, 'kanban_create', { title: 'something broke', template: 'bugfix' })) as {
+    id: string;
+    card: string;
+  };
   const card = getTask(board, created.id);
-  assert.equal(card?.priority, 'p1-high');
-  assert.deepEqual(card?.tags, ['bug']);
+  assert.equal(card?.priority, 'p2-normal', 'an agent never sets a priority, template or not');
+  assert.deepEqual(card?.tags, ['bug'], 'the rest of the template still applies');
+  assert.match(created.card, /priority=p1-high dropped/);
+
+  // The human's own create keeps the template's priority.
+  const human = createTask(
+    board,
+    { title: 'something broke too', priority: 'p1-high', tags: ['bug'] },
+    { actor: { kind: 'human', id: 'dhira' }, now: NOW }
+  );
+  assert.equal(human.priority, 'p1-high');
+  board.close();
+});
+
+test('refused: an explicit priority argument from an agent is refused, not dropped', async () => {
+  const board = openBoard(':memory:');
+  const list = tools(board);
+  await assert.rejects(
+    () => call(list, 'kanban_create', { title: 'urgent thing', priority: 'p0-critical' }),
+    (error: unknown) => error instanceof PolicyViolation && error.policyCode === 'human-only'
+  );
+  assert.equal(listTasks(board, { limit: 10 }).total, 0, 'nothing was created');
   board.close();
 });
 
