@@ -388,15 +388,15 @@ test('kanban_board can report the views and templates it seeded', async () => {
   board.close();
 });
 
-test('kanban_board imports a pre-Kanban table once', async () => {
+test('kanban_board does not offer the migration, and refuses it if asked anyway', async () => {
   const board = openBoard(':memory:');
   const list = tools(board);
-  const text = '| T-101 | an old row | done | lead | — | — | — |';
-  const first = (await call(list, 'kanban_board', { action: 'import-todo', text })) as { summary: string };
-  assert.match(first.summary, /imported 1 of 1/);
-  const second = (await call(list, 'kanban_board', { action: 'import-todo', text })) as { summary: string };
-  assert.match(second.summary, /imported 0 of 1/);
-  assert.equal(listTasks(board, { limit: 10 }).total, 1);
-  assert.equal(readDow(board).wip['in-progress'], 2);
+  // The migration writes rows that bypass every gate, so it is not an agent's action at all — it
+  // is `bin/kanban.mjs migrate`, or the route with a human actor. An action that always refused
+  // would be a trap in the schema, so it is gone from the enum; the handler still ignores it.
+  const action = (byName(list, 'kanban_board').parameters as { action: { enum: string[] } }).action;
+  assert.equal(action.enum.includes('import-todo'), false);
+  await call(list, 'kanban_board', { action: 'import-todo', text: '| T-101 | a row | done | — | — | — | — |' });
+  assert.equal(listTasks(board, { limit: 10 }).total, 0, 'nothing was imported through a tool');
   board.close();
 });

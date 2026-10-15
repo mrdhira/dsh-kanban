@@ -29,7 +29,6 @@ import {
   createSprint,
   createTask,
   getTask,
-  importTodoMd,
   listComments,
   listEvents,
   listSprints,
@@ -564,15 +563,14 @@ export function createTools(deps: ToolDeps): DshToolDefinition[] {
   const boardTool: DshToolDefinition = {
     name: 'kanban_board',
     description:
-      'Read the board itself: the Definition of Workflow (states, WIP limits, SLE, policies), saved views, task templates, the generated Markdown mirror, or the raw export. `import-todo` migrates a pre-Kanban `todo.md` table.',
+      'Read the board itself: the Definition of Workflow (states, WIP limits, SLE, policies), saved views, task templates, the generated Markdown mirror, or the raw export. Migrating a pre-Kanban board is **not** here — it writes rows that bypass every gate, so it belongs to the human (`bin/kanban.mjs migrate`).',
     parameters: {
       action: {
         type: 'string',
         required: true,
-        enum: ['dow', 'views', 'templates', 'export', 'mirror', 'import-todo'],
+        enum: ['dow', 'views', 'templates', 'export', 'mirror'],
         description: 'What to read or do.',
       },
-      text: { type: 'string', description: 'import-todo: the Markdown table to import.' },
     },
     output: {
       schema: { type: 'object', additionalProperties: true, properties: { summary: { type: 'string', required: true } } },
@@ -592,19 +590,6 @@ export function createTools(deps: ToolDeps): DshToolDefinition[] {
             listTemplates(board)
               .map((template) => `${template.id}: ${template.name} — ${template.description}`)
               .join('\n') || 'No templates.',
-        });
-      }
-      if (action === 'import-todo') {
-        const result = importTodoMd(board, typeof input.text === 'string' ? input.text : '', {
-          actor: actorOf(exec),
-          now: new Date(),
-        });
-        deps.mirror();
-        return json({
-          summary: `imported ${result.imported.length} of ${result.rows} rows; skipped ${result.skipped.length} that already existed`,
-          imported: [...result.imported],
-          skipped: [...result.skipped],
-          rows: result.rows,
         });
       }
       if (action === 'mirror') {
