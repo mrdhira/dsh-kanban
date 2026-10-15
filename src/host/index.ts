@@ -11,12 +11,17 @@
  * missing, or the store cannot open, the probe still lands on disk with the reason:
  * `$DSH_HOME/logs/kanban/probe.json`.
  *
- * It declares exactly two hard injections and no more. That is a correction, not a preference: the
- * first live load registered the route, opened the board and imported the board's history — and
- * then failed **every** tool and the skill with `cannot get property "tools" without inject`.
- * Cordis gates *property* access on the declared `inject` list, while `ctx.get('name')` is not
- * gated at all. So the two services the plugin cannot work without are declared, and everything
- * optional is looked up and reported rather than demanded.
+ * It declares three hard injections. That is a correction twice over, and the two halves are the
+ * whole lesson:
+ *
+ * 1. **`inject` gates property access.** The first live load registered the route, opened the board,
+ *    imported its history — and failed every tool and the skill with `cannot get property "tools"
+ *    without inject`. `ctx.get('name')` is not gated; `ctx.name` is.
+ * 2. **`inject` also makes Cordis wait.** The fix declared `['tools','skills']` and left `webServer`
+ *    to `ctx.get` because it seemed optional. On the next fresh start the route never registered —
+ *    `ctx.get('webServer')` answered `undefined`, because the composition mounts the web server
+ *    *after* this plugin — even though the same build had registered it perfectly when hot-added to
+ *    a running app where everything was already mounted. Declaring it makes Cordis wait for it.
  */
 import { createRequire } from 'node:module';
 import { baseRecord, writeProbe, type ProbeRecord } from './probe.js';
@@ -25,13 +30,15 @@ import type { DshHostContext } from '../types/dsh.js';
 export const name = 'kanban';
 
 /**
- * Without these the plugin loads, opens its board, and then offers no tools and no skill — the
- * quietest possible failure. Both are present in this composition, confirmed by the same probe.
+ * The three services the plugin cannot work without: two it calls, one it must wait for.
+ *
+ * This is a **web GUI** plugin by definition (`dsh.client.platform: web`) — a composition with no
+ * web server has nowhere to put the panel either.
  */
-export const inject: readonly string[] = ['tools', 'skills'];
+export const inject: readonly string[] = ['tools', 'skills', 'webServer'];
 
-/** Services whose presence changes what the plugin can do, recorded in the probe. */
-const REPORTED_SERVICES: readonly string[] = ['webServer', 'tools', 'skills', 'timer', 'fs', 'storageDomain', 'sessionProjections'];
+/** Services looked up rather than injected: none is required, so none is waited for. */
+const OPTIONAL_SERVICES: readonly string[] = ['timer', 'fs', 'storageDomain', 'sessionProjections'];
 
 function probeSqlite(): ProbeRecord['sqlite'] {
   try {
@@ -44,16 +51,23 @@ function probeSqlite(): ProbeRecord['sqlite'] {
 }
 
 export function apply(ctx: DshHostContext, config?: unknown): void {
-  const services: Record<string, boolean> = {};
-  for (const key of REPORTED_SERVICES) {
+  const visible: Record<string, boolean> = {};
+  // Recorded for the *optional* services only. The injected ones are guaranteed present — Cordis
+  // waited for them — so asking `ctx.get` about them would report a lie on a composition-ordered
+  // start, which is exactly the misleading evidence this field used to produce.
+  for (const key of OPTIONAL_SERVICES) {
     try {
-      services[key] = ctx.get(key) !== undefined;
+      visible[key] = ctx.get(key) !== undefined;
     } catch {
-      services[key] = false;
+      visible[key] = false;
     }
   }
 
-  const record: ProbeRecord = { ...baseRecord(__BUILD_ID__, services), status: 'starting', sqlite: probeSqlite() };
+  const record: ProbeRecord = {
+    ...baseRecord(__BUILD_ID__, { injected: [...inject], visible }),
+    status: 'starting',
+    sqlite: probeSqlite(),
+  };
   writeProbe(record);
 
   void import('./start.js').then(

@@ -400,3 +400,38 @@ test('kanban_board does not offer the migration, and refuses it if asked anyway'
   assert.equal(listTasks(board, { limit: 10 }).total, 0, 'nothing was imported through a tool');
   board.close();
 });
+
+test('every tool output schema is real JSON Schema, which is the dialect the registry validates', () => {
+  // Nine tools were rejected live with
+  //   `unsupported JSON schema: schema.properties.count.required is not supported on type "integer"`
+  // because `parameters` and `output.schema` are **different dialects**: `parameters` takes a
+  // per-property `required: true` (as the shipped todo tool does), while `output.schema` is real
+  // JSON Schema, where `required` is an array of names at the object level. Nothing in the suite
+  // could see that; this test is what now can.
+  for (const tool of tools(openBoard(':memory:'))) {
+    const schema = tool.output.schema as {
+      readonly required?: unknown;
+      readonly properties?: Record<string, { readonly required?: unknown }>;
+    };
+    assert.equal(Array.isArray(schema.required), true, `${tool.name}.output.schema needs a required ARRAY`);
+    for (const [property, spec] of Object.entries(schema.properties ?? {})) {
+      assert.equal(
+        spec.required,
+        undefined,
+        `${tool.name}.output.schema.properties.${property}.required is not supported — use the array`
+      );
+    }
+    for (const name of schema.required as string[]) {
+      assert.equal(typeof name, 'string', `${tool.name}: required entries must be strings`);
+      assert.ok(schema.properties?.[name] !== undefined, `${tool.name}: required names ${name}, which is not a property`);
+    }
+  }
+});
+
+test('the tool parameters keep the per-property required dialect the registry expects', () => {
+  // The mirror image of the test above: `parameters` is *not* JSON Schema, and "fixing" it to look
+  // like one would break every tool.
+  const list = byName(tools(openBoard(':memory:')), 'kanban_move');
+  const toState = (list.parameters as Record<string, { required?: unknown }>).toState;
+  assert.equal(toState?.required, true, 'parameters use `required: true` per property');
+});

@@ -167,12 +167,13 @@ export function createTools(deps: ToolDeps): DshToolDefinition[] {
     output: {
       schema: {
         type: 'object',
-        additionalProperties: false,
+        additionalProperties: true,
         properties: {
-          count: { type: 'integer', required: true },
-          cards: { type: 'array', required: true, items: { type: 'string' } },
-          wip: { type: 'object', required: true, additionalProperties: true, properties: {} },
+          count: { type: 'integer' },
+          cards: { type: 'string' },
+          wip: { type: 'object' },
         },
+        required: ['count', 'cards', 'wip'],
       },
       render: (_args, value) => renderText(value),
     },
@@ -210,7 +211,7 @@ export function createTools(deps: ToolDeps): DshToolDefinition[] {
     description: 'Read one card in full: its checklists, comments and change history.',
     parameters: { id: { type: 'string', required: true, description: 'The card id, e.g. T-013.' } },
     output: {
-      schema: { type: 'object', additionalProperties: true, properties: { card: { type: 'string', required: true } } },
+      schema: { type: 'object', additionalProperties: true, properties: { card: { type: 'string' } }, required: ['card'] },
       render: (_args, value) => renderText(value),
     },
     execute: async (args) => {
@@ -268,7 +269,7 @@ export function createTools(deps: ToolDeps): DshToolDefinition[] {
       template: { type: 'string', description: 'A template id from kanban_board.' },
     },
     output: {
-      schema: { type: 'object', additionalProperties: true, properties: { id: { type: 'string', required: true } } },
+      schema: { type: 'object', additionalProperties: true, properties: { id: { type: 'string' }, card: { type: 'string' } }, required: ['id', 'card'] },
       render: (_args, value) => renderText(value),
     },
     execute: async (args, exec) => {
@@ -362,7 +363,7 @@ export function createTools(deps: ToolDeps): DshToolDefinition[] {
       expectedRev: { type: 'integer', description: 'Refuse the write if the card has moved on since this rev.' },
     },
     output: {
-      schema: { type: 'object', additionalProperties: true, properties: { card: { type: 'string', required: true } } },
+      schema: { type: 'object', additionalProperties: true, properties: { card: { type: 'string' } }, required: ['card'] },
       render: (_args, value) => renderText(value),
     },
     execute: async (args, exec) => {
@@ -425,7 +426,7 @@ export function createTools(deps: ToolDeps): DshToolDefinition[] {
       expectedRev: { type: 'integer', description: 'Refuse the write if the card has moved on since this rev.' },
     },
     output: {
-      schema: { type: 'object', additionalProperties: true, properties: { card: { type: 'string', required: true } } },
+      schema: { type: 'object', additionalProperties: true, properties: { card: { type: 'string' } }, required: ['card'] },
       render: (_args, value) => renderText(value),
     },
     execute: async (args, exec) => {
@@ -463,7 +464,7 @@ export function createTools(deps: ToolDeps): DshToolDefinition[] {
       reason: { type: 'string', description: 'Required for drop: why it is abandoned.' },
     },
     output: {
-      schema: { type: 'object', additionalProperties: true, properties: { card: { type: 'string', required: true } } },
+      schema: { type: 'object', additionalProperties: true, properties: { card: { type: 'string' } }, required: ['card'] },
       render: (_args, value) => renderText(value),
     },
     execute: async (args, exec) => {
@@ -501,7 +502,7 @@ export function createTools(deps: ToolDeps): DshToolDefinition[] {
       reason: { type: 'string', description: 'cancel: why.' },
     },
     output: {
-      schema: { type: 'object', additionalProperties: true, properties: { summary: { type: 'string', required: true } } },
+      schema: { type: 'object', additionalProperties: true, properties: { summary: { type: 'string' } }, required: ['summary'] },
       render: (_args, value) => renderText(value),
     },
     execute: async (args, exec) => {
@@ -573,7 +574,7 @@ export function createTools(deps: ToolDeps): DshToolDefinition[] {
       },
     },
     output: {
-      schema: { type: 'object', additionalProperties: true, properties: { summary: { type: 'string', required: true } } },
+      schema: { type: 'object', additionalProperties: true, properties: { summary: { type: 'string' } }, required: ['summary'] },
       render: (_args, value) => renderText(value),
     },
     execute: async (args, exec) => {
@@ -630,7 +631,7 @@ export function createTools(deps: ToolDeps): DshToolDefinition[] {
       'The four flow metrics the Kanban Guide requires — WIP, throughput, work item age, cycle time — plus the Service Level Expectation and which cards are past it.',
     parameters: {},
     output: {
-      schema: { type: 'object', additionalProperties: true, properties: { summary: { type: 'string', required: true } } },
+      schema: { type: 'object', additionalProperties: true, properties: { summary: { type: 'string' } }, required: ['summary'] },
       render: (_args, value) => renderText(value),
     },
     execute: async () => {

@@ -29,7 +29,7 @@ const { BoardPage, createKanbanIcon } = require('./components.js') as typeof imp
 const PLUGIN_ID = 'dsh-kanban';
 const PANEL_ID = 'kanban';
 /** Beside Plugins (0) and before Skills (5), where a board belongs. */
-const PANEL_ORDER = 4;
+const PANEL_ORDER = 20;
 const POLL_MS = 5000;
 
 /** The page's own globals, read defensively: this module must load even in a bare realm. */

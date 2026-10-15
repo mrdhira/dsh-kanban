@@ -109,7 +109,7 @@ export interface DshWebRoute {
   handler(req: DshIncomingMessage, res: DshServerResponse): void | Promise<void>;
 }
 
-/** The `webServer` host service, limited to the two calls the host half makes. */
+/** The  host service, limited to the two calls the host half makes. */
 export interface DshWebServerService {
   register(route: DshWebRoute): DshDisposable;
   tapIndex(transform: (html: string) => string): DshDisposable;
@@ -129,10 +129,18 @@ export interface DshServerResponse {
   end(body?: string): unknown;
 }
 
-/** The host context a half is applied with — the Cordis service locator. */
+/**
+ * The host context a half is applied with — the Cordis service locator.
+ *
+ * A service declared as a **property** is available only because the plugin listed it in `inject`,
+ * and listing it also makes Cordis wait for it before calling `apply`. That is why `webServer` is
+ * here rather than fetched with `get`: the composition mounts it after this plugin, so a lookup
+ * answered `undefined` on a fresh start and the route silently never registered.
+ */
 export interface DshHostContext {
   get(name: string): unknown;
   effect(callback: () => DshDisposable, label?: string): DshDisposable;
   readonly tools: DshToolsService;
   readonly skills: DshSkillsService;
+  readonly webServer: DshWebServerService;
 }

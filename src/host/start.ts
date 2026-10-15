@@ -125,12 +125,14 @@ export function start(ctx: DshHostContext, record: ProbeRecord, rawConfig: unkno
 
   const mirror = createMirror(config, board);
 
-  // The route. `webServer` is optional here so that a composition without it still gets the tools.
-  const webServer = ctx.get('webServer') as DshWebServerService | undefined;
-  if (webServer === undefined) {
-    next = { ...next, route: { ...next.route, attempted: false, error: 'the webServer service is not present in this composition' } };
-  } else {
-    try {
+  // The route. `webServer` is **declared in `inject`**, not looked up: Cordis then waits for it
+  // before calling `apply`, which is the difference between registering on a fresh start and
+  // silently not registering because the composition had not mounted it yet.
+  try {
+    const webServer = ctx.webServer;
+    if (webServer === undefined) {
+      next = { ...next, route: { ...next.route, attempted: false, error: 'ctx.webServer was undefined despite being injected' } };
+    } else {
       const handler = createApiHandler({
         board,
         config: () => config,
@@ -143,17 +145,17 @@ export function start(ctx: DshHostContext, record: ProbeRecord, rawConfig: unkno
         'dsh-kanban: /api/kanban route'
       );
       next = { ...next, route: { attempted: true, path: API_PREFIX, registered: true, error: null } };
-    } catch (error) {
-      next = {
-        ...next,
-        route: {
-          attempted: true,
-          path: API_PREFIX,
-          registered: false,
-          error: error instanceof Error ? error.message : String(error),
-        },
-      };
     }
+  } catch (error) {
+    next = {
+      ...next,
+      route: {
+        attempted: true,
+        path: API_PREFIX,
+        registered: false,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    };
   }
 
   // The tools. Each attempt is recorded, so a partially-registered surface is visible.

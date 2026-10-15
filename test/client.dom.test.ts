@@ -61,7 +61,9 @@ test('the bundle registers the sidebar entry and the panel under one id', () => 
   const loaded = loadBundle();
   const entry = loaded.slot('sidebar.panellist');
   assert.equal(entry.spec.id, 'kanban');
-  assert.equal(entry.spec.order, 4);
+  // Below Automation tasks (the schedules entry, order 10), which is where Dhira asked for it.
+  assert.equal(entry.spec.order, 20);
+  assert.ok(entry.spec.order > 10, 'and it must stay below the shipped entries');
   assert.equal(typeof entry.spec.label === 'function' ? (entry.spec.label as () => string)() : entry.spec.label, 'Kanban');
 
   // The sidebar address and the main panel key must be the same string: that is how the shell

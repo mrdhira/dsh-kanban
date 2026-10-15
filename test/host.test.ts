@@ -29,6 +29,9 @@ import { TOOL_NAMES } from '../lib/v1/host/tools.js';
 import { API_PREFIX } from '../lib/v1/host/api.js';
 import type { DshHostContext, DshIncomingMessage, DshServerResponse, DshToolDefinition, DshWebRoute } from '../lib/v1/types/dsh.js';
 
+/** What the plugin declares it cannot work without. Kept here so a test cannot quietly drop one. */
+const INJECTED = ['tools', 'skills', 'webServer'];
+
 interface FakeHost {
   readonly ctx: unknown;
   readonly tools: DshToolDefinition[];
@@ -43,16 +46,28 @@ interface FakeHost {
 /**
  * The restricted host context.
  *
- * `get()` answers for anything; a **property** read only works for the names in `declared`, and
- * otherwise throws the way Cordis does. That asymmetry is the whole rule under test.
+ * Three behaviours are modelled, and each one cost a live failure:
+ *
+ * - a **property** read works only for the names in `declared`, and otherwise throws the way Cordis
+ *   does (`cannot get property "tools" without inject` — the first live failure);
+ * - `get()` answers for anything **except** a service in `pending`, which stands for one the
+ *   composition mounts *after* this plugin. A lookup for such a service answers `undefined` — the
+ *   second live failure, where the route silently never registered;
+ * - declaring a service makes it a property regardless of `pending`, because that is what `inject`
+ *   buys: Cordis waits for it.
  */
-function fakeHost(declared: readonly string[], services: Record<string, unknown>): FakeHost {
+function fakeHost(
+  declared: readonly string[],
+  services: Record<string, unknown>,
+  options: { readonly pending?: readonly string[] } = {}
+): FakeHost {
   const tools: DshToolDefinition[] = [];
   const skills: Record<string, unknown>[] = [];
   const routes: DshWebRoute[] = [];
   const effects: string[] = [];
   const indexTaps: ((html: string) => string)[] = [];
   const refused: string[] = [];
+  const pending = options.pending ?? [];
 
   const registry: Record<string, unknown> = {
     tools: { register: (definition: DshToolDefinition) => (tools.push(definition), () => {}) },
@@ -66,7 +81,7 @@ function fakeHost(declared: readonly string[], services: Record<string, unknown>
   };
 
   const target: Record<string, unknown> = {
-    get: (serviceName: string) => registry[serviceName],
+    get: (serviceName: string) => (pending.includes(serviceName) ? undefined : registry[serviceName]),
     effect: (callback: () => unknown, label?: string) => {
       effects.push(label ?? '(unlabelled)');
       const disposer = callback();
@@ -133,9 +148,12 @@ async function boot(host: FakeHost, home: string, config: Record<string, unknown
 
 // ------------------------------------------------------------------ identity and injection
 
-test('the plugin is named kanban and declares the two services it reads as properties', () => {
+test('the plugin declares the three services it needs, and both reasons are represented', () => {
   assert.equal(name, 'kanban');
-  assert.deepEqual([...inject], ['tools', 'skills']);
+  // Two services it *calls* as properties, and one it must *wait* for: the composition mounts the
+  // web server after this plugin, so a lookup for it answered undefined and the route never
+  // registered on a fresh start. Both reasons live in one list.
+  assert.deepEqual([...inject], ['tools', 'skills', 'webServer']);
 });
 
 test('refused: reading an undeclared service as a property throws, which is why inject is declared', () => {
@@ -148,7 +166,7 @@ test('refused: reading an undeclared service as a property throws, which is why 
 test('the host half registers exactly the nine documented tools', async () => {
   const box = sandbox();
   try {
-    const host = fakeHost(['tools', 'skills'], {});
+    const host = fakeHost(INJECTED, {});
     await boot(host, box.home);
     assert.deepEqual(
       host.tools.map((tool) => tool.name).sort(),
@@ -163,7 +181,7 @@ test('the host half registers exactly the nine documented tools', async () => {
 test('the host half registers the kanban skill with the rules in its body', async () => {
   const box = sandbox();
   try {
-    const host = fakeHost(['tools', 'skills'], {});
+    const host = fakeHost(INJECTED, {});
     await boot(host, box.home);
     assert.equal(host.skills.length, 1);
     const skill = host.skills[0] as { name: string; description: string; content: string; whenToUse?: string };
@@ -179,7 +197,7 @@ test('the host half registers the kanban skill with the rules in its body', asyn
 test('the host half registers the route as a prefix under /api/kanban, and disposes it through an effect', async () => {
   const box = sandbox();
   try {
-    const host = fakeHost(['tools', 'skills'], {});
+    const host = fakeHost(INJECTED, {});
     await boot(host, box.home);
     assert.equal(host.routes.length, 1);
     assert.equal(host.routes[0]?.kind, 'prefix');
@@ -193,7 +211,7 @@ test('the host half registers the route as a prefix under /api/kanban, and dispo
 test('the probe record says what was found, including the runtime and sqlite', async () => {
   const box = sandbox();
   try {
-    const host = fakeHost(['tools', 'skills'], {});
+    const host = fakeHost(INJECTED, {});
     const record = await boot(host, box.home);
     assert.equal(record.status, 'ok');
     assert.equal(record.plugin, 'dsh-kanban');
@@ -210,25 +228,26 @@ test('the probe record says what was found, including the runtime and sqlite', a
   }
 });
 
-test('a missing webServer is reported rather than fatal, and the tools still register', async () => {
+test('the route registers even when the web server mounts after apply', async () => {
   const box = sandbox();
   try {
-    // `webServer` is optional: it is looked up with `ctx.get`, so it never reaches the proxy.
-    const host = fakeHost(['tools', 'skills'], {});
+    // The composition mounts the web server *after* this plugin, so `ctx.get('webServer')` answers
+    // `undefined` — exactly how the route silently failed to register on a fresh start while
+    // working perfectly on a hot-added load where everything was already mounted. Declaring it in
+    // `inject` makes Cordis wait, so the property is there whatever the composition order.
+    const host = fakeHost(INJECTED, {}, { pending: ['webServer'] });
     const record = await boot(host, box.home);
-    assert.equal(host.tools.length, 9);
 
-    const box2 = sandbox();
-    try {
-      const withoutServer = fakeHost(['tools', 'skills'], { webServer: undefined });
-      const record2 = await boot(withoutServer, box2.home);
-      assert.equal(withoutServer.tools.length, 9, 'tools do not depend on the web server');
-      assert.equal((record2.route as { registered: boolean }).registered, false);
-      assert.match((record2.route as { error: string }).error, /webServer/);
-      assert.equal(record2.status, 'ok');
-    } finally {
-      box2.restore();
-    }
+    assert.equal((record.route as { registered: boolean }).registered, true, 'injected, so Cordis waited');
+    assert.equal(host.tools.length, 9);
+    const services = record.services as { injected: string[]; visible: Record<string, boolean> };
+    assert.equal(services.injected.includes('webServer'), true);
+    assert.equal(
+      services.visible.webServer,
+      undefined,
+      'and ctx.get could not see it — precisely why a lookup was the wrong mechanism'
+    );
+    assert.equal(record.status, 'ok');
   } finally {
     box.restore();
   }
@@ -237,7 +256,7 @@ test('a missing webServer is reported rather than fatal, and the tools still reg
 test('a bad config is reported as warnings, and the board still opens at its default path', async () => {
   const box = sandbox();
   try {
-    const host = fakeHost(['tools', 'skills'], {});
+    const host = fakeHost(INJECTED, {});
     const record = await boot(host, box.home, { pollMs: 'soon', mirror: 'yes' });
     assert.equal(record.status, 'ok');
     const warnings = record.warnings as string[];
@@ -258,13 +277,13 @@ test('the import runs once, when the board is empty, and is recorded as a warnin
       join(box.home, 'tasks', 'todo.md'),
       '| ID | Task | State | Owner | Write scope | Acceptance | Links |\n|---|---|---|---|---|---|---|\n| T-001 | an old row | done | lead | `~/.dsh/**` | it worked | [req](T-001-old/requirements.md) |\n'
     );
-    const host = fakeHost(['tools', 'skills'], {});
+    const host = fakeHost(INJECTED, {});
     const record = await boot(host, box.home);
     assert.equal((record.warnings as string[]).some((warning) => warning.includes('imported 1 row')), true);
     assert.equal((record.board as { tasks: number }).tasks, 1);
 
     // A second boot **of the same home** must not import again: the rows are already there.
-    const again = fakeHost(['tools', 'skills'], {});
+    const again = fakeHost(INJECTED, {});
     const second = await boot(again, box.home);
     assert.equal((second.board as { tasks: number }).tasks, 1);
     assert.equal((second.warnings as string[]).some((warning) => warning.includes('imported')), false);
@@ -277,7 +296,7 @@ test('a config path is honoured, so a test never has to touch the real board', a
   const box = sandbox();
   try {
     const custom = join(box.home, 'custom', 'mine.db');
-    const host = fakeHost(['tools', 'skills'], {});
+    const host = fakeHost(INJECTED, {});
     const record = await boot(host, box.home, { dbPath: custom });
     assert.equal((record.board as { path: string }).path, custom);
     assert.equal(existsSync(custom), true);
@@ -342,7 +361,7 @@ async function callRoute(route: DshWebRoute, method: string, url: string, body?:
 test('GET /health answers without a token', async () => {
   const box = sandbox();
   try {
-    const host = fakeHost(['tools', 'skills'], {});
+    const host = fakeHost(INJECTED, {});
     await boot(host, box.home);
     const route = host.routes[0] as DshWebRoute;
     const call = await callRoute(route, 'GET', `${API_PREFIX}/health`);
@@ -360,7 +379,7 @@ test('GET /health answers without a token', async () => {
 test('GET /board answers with the Definition of Workflow, then 304s on the same revision', async () => {
   const box = sandbox();
   try {
-    const host = fakeHost(['tools', 'skills'], {});
+    const host = fakeHost(INJECTED, {});
     await boot(host, box.home);
     const route = host.routes[0] as DshWebRoute;
 
@@ -385,7 +404,7 @@ test('GET /board answers with the Definition of Workflow, then 304s on the same 
 test('POST /mutate creates a card, and the board reflects it', async () => {
   const box = sandbox();
   try {
-    const host = fakeHost(['tools', 'skills'], {});
+    const host = fakeHost(INJECTED, {});
     await boot(host, box.home);
     const route = host.routes[0] as DshWebRoute;
 
@@ -415,7 +434,7 @@ test('POST /mutate creates a card, and the board reflects it', async () => {
 test('POST /mutate carries a refusal back as 422 with the missing checks', async () => {
   const box = sandbox();
   try {
-    const host = fakeHost(['tools', 'skills'], {});
+    const host = fakeHost(INJECTED, {});
     await boot(host, box.home);
     const route = host.routes[0] as DshWebRoute;
     await callRoute(route, 'POST', `${API_PREFIX}/mutate`, JSON.stringify({ op: 'create', input: { title: 'a card' } }), {
@@ -442,7 +461,7 @@ test('POST /mutate carries a refusal back as 422 with the missing checks', async
 test('POST /mutate without an actor header is treated as the human, and an agent header is not', async () => {
   const box = sandbox();
   try {
-    const host = fakeHost(['tools', 'skills'], {});
+    const host = fakeHost(INJECTED, {});
     await boot(host, box.home);
     const route = host.routes[0] as DshWebRoute;
 
@@ -470,7 +489,7 @@ test('POST /mutate without an actor header is treated as the human, and an agent
 test('the route answers 404 for an unknown path, 404 for an unknown card, and 400 for bad JSON', async () => {
   const box = sandbox();
   try {
-    const host = fakeHost(['tools', 'skills'], {});
+    const host = fakeHost(INJECTED, {});
     await boot(host, box.home);
     const route = host.routes[0] as DshWebRoute;
 
@@ -487,7 +506,7 @@ test('the route answers 404 for an unknown path, 404 for an unknown card, and 40
 test('GET /export answers Markdown with the generator banner', async () => {
   const box = sandbox();
   try {
-    const host = fakeHost(['tools', 'skills'], {});
+    const host = fakeHost(INJECTED, {});
     await boot(host, box.home);
     const route = host.routes[0] as DshWebRoute;
     const call = await callRoute(route, 'GET', `${API_PREFIX}/export`);
@@ -502,7 +521,7 @@ test('GET /export answers Markdown with the generator banner', async () => {
 test('a board mutation refreshes the generated view on disk', async () => {
   const box = sandbox();
   try {
-    const host = fakeHost(['tools', 'skills'], {});
+    const host = fakeHost(INJECTED, {});
     const record = await boot(host, box.home);
     const route = host.routes[0] as DshWebRoute;
     const view = join(box.home, 'tasks', 'todo.md');
@@ -549,7 +568,7 @@ const DOW = {
 test('refused (422): an agent may not rewrite the Definition of Workflow', async () => {
   const box = sandbox();
   try {
-    const host = fakeHost(['tools', 'skills'], {});
+    const host = fakeHost(INJECTED, {});
     await boot(host, box.home);
     const route = host.routes[0] as DshWebRoute;
 
@@ -576,7 +595,7 @@ test('refused (422): an agent may not rewrite the Definition of Workflow', async
 test('refused (400): the human may not store a Definition of Workflow that is not one', async () => {
   const box = sandbox();
   try {
-    const host = fakeHost(['tools', 'skills'], {});
+    const host = fakeHost(INJECTED, {});
     await boot(host, box.home);
     const route = host.routes[0] as DshWebRoute;
     const post = (dow: unknown) =>
@@ -594,7 +613,7 @@ test('refused (400): the human may not store a Definition of Workflow that is no
 test('the human may tighten a WIP limit, and the fields not mentioned survive', async () => {
   const box = sandbox();
   try {
-    const host = fakeHost(['tools', 'skills'], {});
+    const host = fakeHost(INJECTED, {});
     await boot(host, box.home);
     const route = host.routes[0] as DshWebRoute;
 
@@ -617,7 +636,7 @@ test('the human may tighten a WIP limit, and the fields not mentioned survive', 
 test('refused (422): an agent may not import a pre-Kanban board', async () => {
   const box = sandbox();
   try {
-    const host = fakeHost(['tools', 'skills'], {});
+    const host = fakeHost(INJECTED, {});
     await boot(host, box.home);
     const route = host.routes[0] as DshWebRoute;
 

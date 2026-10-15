@@ -29,7 +29,18 @@ export interface ProbeRecord {
   readonly node: string;
   readonly electron: string | null;
   readonly sqlite: { readonly available: boolean; readonly error: string | null };
-  readonly services: Readonly<Record<string, boolean>>;
+  /**
+   * Two different questions, kept apart because conflating them cost a day.
+   *
+   * `injected` is what Cordis waited for before calling `apply` — guaranteed present. `visible` is
+   * what `ctx.get` can see for the *optional* services. A single map used to mix the two, and on a
+   * composition-ordered start it reported `webServer: false` beside a route that had every reason
+   * to register.
+   */
+  readonly services: {
+    readonly injected: readonly string[];
+    readonly visible: Readonly<Record<string, boolean>>;
+  };
   readonly route: { readonly attempted: boolean; readonly path: string; readonly registered: boolean; readonly error: string | null };
   readonly tools: readonly string[];
   readonly skill: string | null;
@@ -50,7 +61,10 @@ export function writeProbe(record: ProbeRecord): void {
 }
 
 /** The fields known before any plugin code runs. */
-export function baseRecord(buildId: string, services: Record<string, boolean>): Omit<ProbeRecord, 'status'> {
+export function baseRecord(
+  buildId: string,
+  services: ProbeRecord['services']
+): Omit<ProbeRecord, 'status'> {
   const versions = process.versions as Record<string, string | undefined>;
   return {
     at: new Date().toISOString(),
