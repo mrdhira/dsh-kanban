@@ -1,6 +1,6 @@
 {
   "name": "dsh-kanban",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "A Kanban board for the DSH Web GUI: one SQLite task board with drag-and-drop, views and templates in its own sidebar panel, plus host tools, a skill and a CLI so agents and the human work the same cards.",
   "type": "module",

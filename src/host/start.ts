@@ -54,6 +54,7 @@ function createMirror(config: KanbanConfig, board: () => Board): () => void {
         boardRev: boardRevision(handle),
         generatedAt: new Date().toISOString(),
         invalid: listed.invalid,
+        total: listed.total,
       });
       mkdirSync(dirname(config.mirrorPath), { recursive: true });
       const temporary = `${config.mirrorPath}.tmp`;

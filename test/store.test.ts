@@ -14,6 +14,9 @@ import {
   InvalidError,
   NotFoundError,
   PolicyViolation,
+  COMMENT_EVENT_PREVIEW_CHARS,
+  MAX_COMMENT_CHARS,
+  MAX_IMPORT_CHARS,
   addComment,
   boardRevision,
   blockTask,
@@ -29,6 +32,7 @@ import {
   generateTaskId,
   getTask,
   importTask,
+  importTodoMd,
   listComments,
   listEvents,
   listSprints,
@@ -758,5 +762,47 @@ test('a tag filter treats LIKE wildcards literally', () => {
   assert.equal(listTasks(board, { tag: 'metrics' }).total, 1);
   assert.equal(listTasks(board, { tag: '%' }).total, 1, '% must match the literal tag, not everything');
   assert.equal(listTasks(board, { tag: 'metric' }).total, 0, 'and it is still an exact-ish match');
+  board.close();
+});
+
+// ------------------------------------------------------------------ bounded input
+
+test('refused: a comment longer than the cap, and the event keeps only a preview', () => {
+  const board = newBoard();
+  const card = createTask(board, { title: 'first' }, { actor: HUMAN, now: NOW });
+
+  // The route caps its body at 1 MiB; the tools and the CLI do not go through it, so the store is
+  // the only writer-agnostic place to refuse a runaway input.
+  assert.throws(
+    () => addComment(board, card.id, 'x'.repeat(MAX_COMMENT_CHARS + 1), { actor: HUMAN, now: NOW }),
+    InvalidError
+  );
+
+  const comment = addComment(board, card.id, 'y'.repeat(500), { actor: HUMAN, now: NOW });
+  assert.equal(comment.body.length, 500, 'the comment itself is kept in full');
+  const event = listEvents(board, { taskId: card.id }).find((entry) => entry.kind === 'commented');
+  assert.equal((event?.payload.preview as string).length, COMMENT_EVENT_PREVIEW_CHARS, 'the log keeps a preview');
+  assert.equal(event?.payload.length, 500, 'and the true length');
+  board.close();
+});
+
+test('refused: an import larger than the cap', () => {
+  const board = newBoard();
+  assert.throws(
+    () => importTodoMd(board, 'x'.repeat(MAX_IMPORT_CHARS + 1), { actor: HUMAN, now: NOW }),
+    InvalidError
+  );
+  assert.equal(listTasks(board, { limit: 10 }).total, 0);
+  board.close();
+});
+
+test('a limited read reports the whole count, so a partial view can be announced', () => {
+  const board = newBoard();
+  for (let index = 0; index < 3; index += 1) {
+    createTask(board, { title: `card ${index}` }, { actor: HUMAN, now: NOW });
+  }
+  const page = listTasks(board, { limit: 2 });
+  assert.equal(page.tasks.length, 2);
+  assert.equal(page.total, 3, 'the total is the store\'s, not the page\'s');
   board.close();
 });

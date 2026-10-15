@@ -42,6 +42,8 @@ export interface BoardPayload {
   readonly sprints: readonly Sprint[];
   readonly invalid: readonly { readonly id: string; readonly reason: string }[];
   readonly total: number;
+  /** Set when the board holds more cards than the panel reads, so the gap is visible. */
+  readonly truncated: { readonly shown: number; readonly total: number } | null;
   readonly servedAt: string;
   readonly buildId: string;
 }

@@ -445,6 +445,7 @@ function renderBoard(board: ReturnType<typeof openBoard>, generatedAt: string): 
     boardRev: boardRevision(board),
     generatedAt,
     invalid: listed.invalid,
+    total: listed.total,
   });
 }
 

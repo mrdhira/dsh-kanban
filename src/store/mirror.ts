@@ -51,6 +51,8 @@ export interface MirrorInput {
   readonly boardRev: number;
   readonly generatedAt: string;
   readonly invalid?: readonly { readonly id: string; readonly reason: string }[];
+  /** The card count in the store, when it is larger than the rows rendered. */
+  readonly total?: number;
 }
 
 /** Render the whole file. Pure: the same input always produces the same bytes. */
@@ -127,6 +129,15 @@ export function renderTodoMd(input: MirrorInput): string {
     lines.push('## Rows that failed validation');
     lines.push('');
     for (const entry of input.invalid) lines.push(`- \`${entry.id}\`: ${entry.reason}`);
+  }
+
+  // A partly-rendered board must say so, in the file itself. The metrics above are computed from
+  // the rows that were read, so a silent cap would make them quietly wrong.
+  if (input.total !== undefined && input.total > input.tasks.length) {
+    lines.push('');
+    lines.push(
+      `> **Partial board.** ${input.tasks.length} of ${input.total} cards are shown, and the flow metrics above are computed from those ${input.tasks.length}. Raise the read limit before trusting them.`
+    );
   }
 
   lines.push('');

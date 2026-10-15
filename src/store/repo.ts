@@ -848,18 +848,28 @@ export function purgeTask(board: Board, id: string, options: MutationOptions): v
   });
 }
 
+/**
+ * A comment's maximum length, and the length of the copy kept in the event log.
+ *
+ * The HTTP route caps a request body at 1 MiB, but the tools and the CLI do not go through it, so
+ * the store is the only place that sees every writer. Unbounded text in a task board is a way to
+ * turn a local file into something nobody can open — and the event payload used to duplicate the
+ * whole comment, doubling the cost of the one table that is meant to be cheap to append to.
+ */
+export const MAX_COMMENT_CHARS = 10_000;
+export const COMMENT_EVENT_PREVIEW_CHARS = 200;
+
 export function addComment(board: Board, taskId: string, body: string, options: MutationOptions): Comment {
-  if (body.trim().length === 0) throw new InvalidError('a comment needs a body');
+  const text = body.trim();
+  if (text.length === 0) throw new InvalidError('a comment needs a body');
+  if (text.length > MAX_COMMENT_CHARS) {
+    throw new InvalidError(`a comment may be at most ${MAX_COMMENT_CHARS} characters; got ${text.length}`);
+  }
   return withWrite(board, () => {
     const current = getTaskOrThrow(board, taskId);
     const at = nowIso(options);
     const by = actorId(options.actor);
-    execute(board, 'INSERT INTO comments (task_id, at, actor, body) VALUES (?, ?, ?, ?)', [
-      taskId,
-      at,
-      by,
-      body.trim(),
-    ]);
+    execute(board, 'INSERT INTO comments (task_id, at, actor, body) VALUES (?, ?, ?, ?)', [taskId, at, by, text]);
     appendEvent(board, {
       at,
       actor: by,
@@ -867,11 +877,13 @@ export function addComment(board: Board, taskId: string, body: string, options: 
       kind: 'commented',
       fromState: current.state,
       toState: current.state,
-      payload: { body: body.trim() },
+      // A bounded preview, not the whole body: the comment itself lives in `comments`, and the
+      // event log only has to say that one was made and roughly what it said.
+      payload: { preview: text.slice(0, COMMENT_EVENT_PREVIEW_CHARS), length: text.length },
     });
     bumpBoardRev(board);
     const row = queryOne<{ id: number }>(board, 'SELECT last_insert_rowid() AS id', []);
-    return { id: row?.id ?? 0, taskId, at, actor: by, body: body.trim() };
+    return { id: row?.id ?? 0, taskId, at, actor: by, body: text };
   });
 }
 

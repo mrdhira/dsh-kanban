@@ -59,6 +59,7 @@ function payload(tasks: Task[], overrides: Partial<BoardPayload> = {}): BoardPay
     templates: [],
     sprints: [],
     invalid: [],
+    truncated: null,
     total: tasks.length,
     servedAt: '2026-10-15T12:00:00.000Z',
     buildId: 'test',

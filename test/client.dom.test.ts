@@ -287,3 +287,40 @@ test('mounting starts polling with a revision cursor, and unmounting stops it', 
   assert.equal(store.getSnapshot().payload?.rev, 7);
   view.unmount();
 });
+
+test('a 304 leaves the snapshot object identical, so React is not asked to render', async () => {
+  const loaded = loadBundle();
+  const payload = fixture();
+  let boardCalls = 0;
+  setFetch((call) => {
+    if (call.url.includes('/board')) {
+      boardCalls += 1;
+      return boardCalls === 1
+        ? { status: 200, body: { ok: true, board: payload, rev: payload.rev } }
+        : { status: 304, body: undefined };
+    }
+    return { status: 404, body: {} };
+  });
+
+  const store = freshStore(loaded) as { getSnapshot(): unknown; refresh(force?: boolean): Promise<void> };
+  const view = mount(loaded, loaded.slot('main'), { store });
+  await flush();
+  assert.equal(boardCalls, 1);
+
+  const before = store.getSnapshot();
+  await store.refresh(false);
+  await flush();
+
+  // A defensive copy in `getSnapshot` once caused "Maximum update depth exceeded": the hook
+  // compares snapshots by reference, so an unchanged board must be the *same object*.
+  assert.equal(boardCalls, 2, 'the poll asked with its revision cursor');
+  assert.equal(store.getSnapshot(), before, 'and the snapshot is untouched');
+  view.unmount();
+});
+
+test('a partly-read board says so on screen', async () => {
+  const payload = fixture();
+  const view = await mountBoard(loadBundle(), { ...payload, truncated: { shown: 5, total: 900 } });
+  assert.match(view.text(), /showing 5 of 900 cards/);
+  view.unmount();
+});

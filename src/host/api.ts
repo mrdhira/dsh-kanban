@@ -167,6 +167,10 @@ function boardPayload(deps: ApiDeps): Record<string, unknown> {
     sprints: listSprints(board),
     invalid: listed.invalid,
     total: listed.total,
+    // The panel and the mirror both read at most 500 cards. Past that the metrics would be computed
+    // from a subset without saying so, so the payload says it: a board that silently reports eleven
+    // of thirteen cards is the failure this field exists to prevent.
+    truncated: listed.total > listed.tasks.length ? { shown: listed.tasks.length, total: listed.total } : null,
     servedAt: now.toISOString(),
     buildId: deps.buildId,
   };
@@ -483,6 +487,7 @@ export function createApiHandler(deps: ApiDeps): DshWebRoute['handler'] {
           boardRev: boardRevision(board),
           generatedAt: new Date().toISOString(),
           invalid: listed.invalid,
+          total: listed.total,
         });
         send(res, 200, markdown, 'text/markdown; charset=utf-8');
         return;

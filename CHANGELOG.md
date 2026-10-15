@@ -4,10 +4,15 @@ All notable changes to `dsh-kanban`. The version identifies the generation the a
 panel footer and `/api/kanban/health` both report the build id, which is
 `dsh-kanban/<version>+<stamp>`.
 
-## 0.1.0 — 2026-10-15
+## 1.0.0 — 2026-10-15
 
-First working board. **Not yet released as 1.0.0**: the host half has not reloaded since the
-`inject` fix, so the nine tools and the skill are not registered in the running app.
+First release. One live check is still outstanding and is stated rather than implied: **this running
+instance has not reloaded the host half**, so `probe.json` still reads `tools: []` and the nine tools
+and the skill appear only after an app restart. A fresh install loads them with everything else.
+
+### 0.1.0 — 2026-10-15
+
+First working board.
 
 ### Added
 
@@ -89,3 +94,14 @@ Also fixed: the 31-day sprint window was rounded to the nearest day (so 31.375 d
 sprint and wrote no events; a tag filter interpolated `%` and `_` as LIKE wildcards; the probe record
 reported `tasks: 0` beside a warning that rows had been imported; and `DEFAULT_CONFIG` computed the
 board paths **once at module load**, freezing them to whatever `DSH_HOME` was at first import.
+
+### Bounded input and visible caps (same day)
+
+- A comment is capped at 10 000 characters and the event log keeps a 200-character preview plus the
+  true length, rather than duplicating the whole body; the importer refuses a table over 5 000 000
+  characters. The HTTP body cap does not cover the tools or the CLI, so the store enforces it.
+- A board larger than the 500 cards the panel and the view read now **says so**: the payload carries
+  `truncated`, the panel shows "showing N of M cards", and the generated file carries a
+  *Partial board* note — because the flow metrics are computed from the rows that were read.
+- A test now pins the `304` path's snapshot identity: an unchanged board must be the *same object*,
+  since a defensive copy in `getSnapshot` once caused "Maximum update depth exceeded".

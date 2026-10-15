@@ -17,6 +17,7 @@
  *   claim this board exists to prevent.
  */
 import type { Board } from './db.js';
+import { InvalidError } from './errors.js';
 import { blockTask, importTask } from './repo.js';
 import { DOR_CHECKS, type Actor, type CheckId, type CreateTaskInput, type Link, type State } from './types.js';
 
@@ -145,11 +146,23 @@ export interface ImportResult {
  * Each card is one transaction, so a failure part-way leaves the rows already imported in place —
  * and safely re-runnable, because the ids that landed are skipped next time.
  */
+/**
+ * The largest table the importer will read.
+ *
+ * The route caps a request body at 1 MiB, but the CLI reads a file directly, so the store is the
+ * only writer-agnostic place to refuse a runaway input. A migration that parses a 200 MB file into
+ * a synchronous loop is a way to make the board unopenable.
+ */
+export const MAX_IMPORT_CHARS = 5_000_000;
+
 export function importTodoMd(
   board: Board,
   text: string,
   options: { readonly actor: Actor; readonly now?: Date }
 ): ImportResult {
+  if (text.length > MAX_IMPORT_CHARS) {
+    throw new InvalidError(`the import is ${text.length} characters; the limit is ${MAX_IMPORT_CHARS}`);
+  }
   const rows = parseTodoMd(text);
   const imported: string[] = [];
   const skipped: string[] = [];

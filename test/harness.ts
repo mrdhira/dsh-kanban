@@ -400,6 +400,7 @@ export function boardPayload(overrides: Record<string, unknown> = {}): Record<st
     templates: [],
     sprints: [],
     invalid: [],
+    truncated: null,
     total: 5,
     servedAt: '2026-10-15T12:00:00.000Z',
     buildId: 'dsh-kanban/0.1.0+test',

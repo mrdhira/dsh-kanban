@@ -168,3 +168,13 @@ test('an empty board still renders a valid document', () => {
   assert.match(text, /\*\*WIP\*\* 0 of 3/);
   assert.match(text, /\| ID \| Task \|/);
 });
+
+test('a partly-read board says so in the file, because its metrics cover only those rows', () => {
+  const partial = render(CARDS, { total: 999 });
+  assert.match(partial, /Partial board/);
+  assert.match(partial, new RegExp(`${CARDS.length} of 999 cards`));
+
+  // A complete read says nothing extra.
+  assert.doesNotMatch(render(CARDS, { total: CARDS.length }), /Partial board/);
+  assert.doesNotMatch(render(CARDS), /Partial board/);
+});

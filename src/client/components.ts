@@ -538,6 +538,15 @@ export function BoardPage(props: BoardProps): ReactElement {
       )
     ),
     React.createElement(NoticeStrip, child),
+    // A partly-read board says so on screen, for the same reason the generated file does: the
+    // metrics are computed from the cards that were read.
+    state.payload?.truncated == null
+      ? null
+      : React.createElement(
+          'div',
+          { className: 'kb-notice kb-notice-info' },
+          `showing ${state.payload.truncated.shown} of ${state.payload.truncated.total} cards — the flow metrics cover only those`
+        ),
     React.createElement(MetricsStrip, child),
     React.createElement('div', { className: 'kb-dim', role: 'status', 'aria-live': 'polite' }, announcement),
     state.status === 'error' && state.payload === null
