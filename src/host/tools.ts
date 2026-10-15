@@ -500,22 +500,26 @@ export function createTools(deps: ToolDeps): DshToolDefinition[] {
         );
         return json({ summary: `${sprint.id} created (${sprint.start} → ${sprint.end})`, sprint: json(sprint) });
       }
-      if (action === 'start') {
-        const sprint = startSprint(board, typeof input.id === 'string' ? input.id : '', { actor, now });
-        return json({ summary: `${sprint.id} active: ${sprint.goal}`, sprint: json(sprint) });
-      }
-      if (action === 'close') {
-        const result = closeSprint(board, typeof input.id === 'string' ? input.id : '', { actor, now });
-        deps.mirror();
-        return json({
-          summary: `${result.sprint.id} closed; ${result.returned.length} unfinished card(s) returned to the backlog`,
-          returned: json(result.returned),
-        });
-      }
-      if (action === 'cancel') {
+      if (action === 'start' || action === 'close' || action === 'cancel') {
+        // Validated here rather than let through: `startSprint('')` reports `sprint "" does not
+        // exist`, which tells a model nothing about what it forgot.
+        const sprintId = typeof input.id === 'string' ? input.id : '';
+        if (sprintId.length === 0) throw new Error(`kanban_sprint needs an id for ${action}`);
+        if (action === 'start') {
+          const sprint = startSprint(board, sprintId, { actor, now });
+          return json({ summary: `${sprint.id} active: ${sprint.goal}`, sprint: json(sprint) });
+        }
+        if (action === 'close') {
+          const result = closeSprint(board, sprintId, { actor, now });
+          deps.mirror();
+          return json({
+            summary: `${result.sprint.id} closed; ${result.returned.length} unfinished card(s) returned to the backlog`,
+            returned: json(result.returned),
+          });
+        }
         const sprint = cancelSprint(
           board,
-          typeof input.id === 'string' ? input.id : '',
+          sprintId,
           typeof input.reason === 'string' ? input.reason : '',
           { actor, now }
         );
