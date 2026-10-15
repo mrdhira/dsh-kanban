@@ -1,0 +1,25 @@
+{
+  // The browser half plus the vendored DSH client contracts.
+  //
+  // `types: []` on purpose: the browser half must not see Node globals. `src/store/types.ts`
+  // is the only host file it imports, and that file is deliberately pure (no `node:*` import,
+  // no I/O) so the browser bundle can share the task vocabulary with the store instead of
+  // restating it. `strict: true` applies to the whole half — no `any` in this project.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "types": [],
+    "strict": true
+  },
+  "include": [
+    "src/client/**/*.cts",
+    "src/client/**/*.ts",
+    "src/types/**/*.ts",
+    "src/store/types.ts",
+    "types/client-globals.d.ts"
+  ]
+}

@@ -1,0 +1,9 @@
+node_modules/
+lib/
+*.log
+
+# Generated: `node build.mjs` writes the CLI bundle here from `src/cli/kanban.ts`.
+bin/
+
+# The probe record is host-written state, not source.
+logs/

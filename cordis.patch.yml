@@ -1,0 +1,16 @@
+# The kanban bundle's one Loader row.
+#
+# `config` is present but empty on purpose: Cordis validates a row's config before the plugin
+# activates and passes `undefined` when the key is absent. The host half exports no `Config`
+# schema (it cannot import `schemastery` from a profile directory), so it reads every field
+# defensively and applies its own defaults — an explicit empty object means the row activates
+# with the board at its default path and the default Definition of Workflow.
+#
+#   config:
+#     dbPath: /absolute/path/board.db     # default: $DSH_HOME/tasks/board.db
+#     mirror: true                        # regenerate tasks/todo.md on mutation (default true)
+#     pollMs: 5000                        # client refresh interval while the panel is visible
+- insert:
+    - id: kanban
+      name: dsh-kanban
+      config: {}

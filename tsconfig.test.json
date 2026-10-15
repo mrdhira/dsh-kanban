@@ -1,0 +1,23 @@
+{
+  // The suite. Tests are TypeScript, run by Node's own type stripping (Node 24 needs no flag,
+  // loader or build), and they import **built** `lib/**` — never the sources. That rule exists
+  // because five test files once validated stale pre-port `lib/*.js` that were no longer
+  // shipped: green, and wrong. `pretest` rebuilds so the artifacts cannot lag.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "types": [
+      "node"
+    ],
+    "allowImportingTsExtensions": true,
+    "allowJs": true,
+    "noEmit": true
+  },
+  "include": [
+    "test/**/*.ts"
+  ]
+}

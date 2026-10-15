@@ -1,0 +1,37 @@
+{
+  // The declaration build. `build.mjs` runs this after esbuild so `lib/v1/**` carries real
+  // `.d.ts` files next to the JavaScript: the suite imports the *built* modules, and without
+  // declarations those imports have no type surface at all — `export *` from plain JavaScript
+  // exposes values and no types, which is exactly how `Task` and `PolicyResult` went missing.
+  //
+  // `emitDeclarationOnly` because esbuild owns the JavaScript: two emitters for one artifact is
+  // how a stale file appears.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "rootDir": "src",
+    "outDir": "lib/v1",
+    "stripInternal": true,
+    // The declaration program covers both halves, so it needs the union of their libraries. This is
+    // the one place the two are compiled together: the *typecheck* projects keep them apart so the
+    // browser half cannot see Node globals and the host half cannot see the DOM, while this project
+    // only has to emit types for what already type-checked.
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "types": [
+      "node"
+    ]
+  },
+  "include": [
+    "src/types/**/*.ts",
+    "src/store/**/*.ts",
+    "src/host/**/*.ts",
+    "src/client/**/*.ts",
+    "types/host-globals.d.ts"
+  ]
+}

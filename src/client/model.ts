@@ -1,0 +1,287 @@
+/**
+ * The browser half's model: what a board payload means, and what a move does to it.
+ *
+ * **Pure on purpose.** No DOM, no `fetch`, no React. Everything a test wants to pin — column
+ * contents, WIP arithmetic, local gate checks, drag targets, age bands — is a function of data
+ * here, which is the only way a drag-and-drop board can be tested at all: jsdom's drag events are
+ * unreliable, so the logic must not live in the handlers.
+ *
+ * It imports the **task vocabulary** from the store (`State`, `Task`, `compareInColumn`, the WIP
+ * limits) rather than restating it. That is the point of `src/store/types.ts` being pure: one
+ * spelling of "in-progress", one definition of column order, shared by the host that writes the
+ * rows and the browser that draws them.
+ */
+import {
+  CLASS_LABEL,
+  PRIORITY_LABEL,
+  STATE_LABEL,
+  STATES,
+  WIP_STATES,
+  compareInColumn,
+  stateIndex,
+  type DefinitionOfWorkflow,
+  type Priority,
+  type SavedView,
+  type Sprint,
+  type State,
+  type Task,
+  type Template,
+} from '../store/types.js';
+import type { FlowMetrics } from '../store/metrics.js';
+
+/** Exactly what `GET /api/kanban/board` returns, as the panel consumes it. */
+export interface BoardPayload {
+  readonly rev: number;
+  readonly title: string;
+  readonly dow: DefinitionOfWorkflow;
+  readonly tasks: readonly Task[];
+  readonly metrics: FlowMetrics;
+  readonly counts: Readonly<Record<string, number>>;
+  readonly views: readonly SavedView[];
+  readonly templates: readonly Template[];
+  readonly sprints: readonly Sprint[];
+  readonly invalid: readonly { readonly id: string; readonly reason: string }[];
+  readonly total: number;
+  readonly servedAt: string;
+  readonly buildId: string;
+}
+
+/** The columns the board draws: everything except `dropped`, which is a view, not a lane. */
+export const BOARD_STATES: readonly State[] = STATES.filter((state) => state !== 'dropped');
+
+/** A filter the human can apply from the toolbar. */
+export interface ViewFilter {
+  readonly state?: readonly State[];
+  readonly assignee?: string;
+  readonly project?: string;
+  /** `null` means "not in a sprint", which is a real question a view can ask. */
+  readonly sprintId?: string | null;
+  readonly tag?: string;
+  readonly priority?: readonly Priority[];
+  readonly blocked?: boolean;
+  readonly search?: string;
+}
+
+export const EMPTY_FILTER: ViewFilter = {};
+
+/** One drawn column. */
+export interface Column {
+  readonly state: State;
+  readonly label: string;
+  readonly cards: readonly Task[];
+  /** The WIP limit or ready cap, when the state has one. */
+  readonly limit: number | undefined;
+  readonly over: boolean;
+}
+
+/**
+ * The WIP limit that applies to a state.
+ *
+ * Mirrors `policy.limitFor` on the host. Duplicated deliberately and narrowly: the panel must
+ * refuse a drag *before* it sends it, and the host must refuse it again. The host is authoritative —
+ * this copy exists so the human sees the refusal instantly rather than after a round trip.
+ */
+export function limitFor(state: State, dow: DefinitionOfWorkflow): number | undefined {
+  if ((WIP_STATES as readonly string[]).includes(state)) return dow.wip[state as 'in-progress' | 'review'];
+  if (state === 'ready') return dow.readyCap;
+  return undefined;
+}
+
+/** Filter the cards the toolbar is currently asking for. */
+export function filterCards(tasks: readonly Task[], filter: ViewFilter): Task[] {
+  const search = filter.search?.trim().toLowerCase();
+  return tasks.filter((task) => {
+    if (filter.state !== undefined && filter.state.length > 0 && !filter.state.includes(task.state)) return false;
+    if (filter.priority !== undefined && filter.priority.length > 0 && !filter.priority.includes(task.priority)) return false;
+    if (filter.assignee !== undefined && task.assignee !== filter.assignee) return false;
+    if (filter.project !== undefined && task.project !== filter.project) return false;
+    if (filter.sprintId !== undefined && task.sprintId !== filter.sprintId) return false;    if (filter.tag !== undefined && !task.tags.includes(filter.tag)) return false;
+    if (filter.blocked === true && task.blockedReason === null) return false;
+    if (search !== undefined && search.length > 0) {
+      const haystack = `${task.id} ${task.title} ${task.outcome ?? ''} ${task.description ?? ''}`.toLowerCase();
+      if (!haystack.includes(search)) return false;
+    }
+    return true;
+  });
+}
+
+/** The columns to draw, in board order, each already sorted by the board's rule. */
+export function columnsOf(payload: BoardPayload, filter: ViewFilter = EMPTY_FILTER): Column[] {
+  const tasks = filterCards(payload.tasks, filter);
+  return BOARD_STATES.map((state) => {
+    const cards = tasks.filter((task) => task.state === state).sort(compareInColumn);
+    const limit = limitFor(state, payload.dow);
+    return {
+      state,
+      label: STATE_LABEL[state],
+      cards,
+      limit,
+      over: limit !== undefined && cards.length > limit,
+    };
+  });
+}
+
+/** WIP as the guide defines it: started, not finished — blocked cards included. */
+export function wipTotal(tasks: readonly Task[]): number {
+  return tasks.filter((task) => (WIP_STATES as readonly string[]).includes(task.state)).length;
+}
+
+/** Whole days a card has been in progress, or null when it has not started. */
+export function ageDays(task: Task, nowIso: string): number | null {
+  if (task.startedAt === null) return null;
+  const days = (Date.parse(nowIso) - Date.parse(task.startedAt)) / 86_400_000;
+  return Math.round(days * 10) / 10;
+}
+
+export type AgeBand = 'fresh' | 'ageing' | 'stale';
+
+/** How a card's age reads against the Service Level Expectation. */
+export function ageBand(days: number | null, sleDays: number): AgeBand {
+  if (days === null) return 'fresh';
+  if (days > sleDays * 1.5) return 'stale';
+  if (days > sleDays) return 'ageing';
+  return 'fresh';
+}
+
+/** `3d`, `0.5d`, `—`. Locale-free: the board's numbers must not depend on the machine. */
+export function formatAge(days: number | null): string {
+  if (days === null) return '—';
+  return `${Number.isInteger(days) ? days : days.toFixed(1)}d`;
+}
+
+/** `P0`, `P1` — the ribbon's text. */
+export function priorityBadge(priority: Priority): string {
+  return PRIORITY_LABEL[priority].split(' ')[0] ?? priority;
+}
+
+export function classLabel(task: Task): string {
+  return CLASS_LABEL[task.classOfService];
+}
+
+/**
+ * Position for dropping a card at `index` in a column.
+ *
+ * Position is a real number, so a drop between two cards takes the midpoint and no other row has to
+ * move. Dropping at the end appends past the last card, and an empty column starts at 0.
+ */
+export function positionForIndex(cards: readonly Task[], index: number): number {
+  if (cards.length === 0) return 0;
+  const clamped = Math.max(0, Math.min(index, cards.length));
+  if (clamped === 0) return (cards[0] as Task).position - 1;
+  if (clamped >= cards.length) return (cards[cards.length - 1] as Task).position + 1;
+  const before = cards[clamped - 1] as Task;
+  const after = cards[clamped] as Task;
+  return (before.position + after.position) / 2;
+}
+
+/** The result of a local gate check: allowed, or refused with the reason the human will read. */
+export type LocalVerdict = { readonly ok: true } | { readonly ok: false; readonly reason: string; readonly missing?: readonly string[] };
+
+/** Unticked checks on a card, in checklist order. */
+export function missingChecks(task: Task, dow: DefinitionOfWorkflow, gate: 'dor' | 'dod'): string[] {
+  const required = gate === 'dor' ? dow.dor : dow.dod;
+  const checked: Record<string, unknown> = gate === 'dor' ? { ...task.dor } : { ...task.dod };
+  return required.filter((id) => checked[id] === undefined);
+}
+
+/**
+ * Would the host accept this move? Asked before sending, so the refusal is instantaneous.
+ *
+ * Kept in the same order as `policy.checkMove` on the host: the human's exception, the DoR gate,
+ * the DoD gate, the drop reason, the blocked ban, then WIP. If the two ever disagree the host wins
+ * and the panel shows the host's message — which is why the wording here is short and the host's is
+ * authoritative.
+ */
+export function checkMoveLocally(input: {
+  readonly payload: BoardPayload;
+  readonly task: Task;
+  readonly toState: State;
+  readonly force?: boolean;
+  readonly reason?: string;
+}): LocalVerdict {
+  const { payload, task, toState } = input;
+  if (task.state === toState) return { ok: true };
+
+  if (input.force === true) {
+    if (input.reason === undefined || input.reason.trim().length === 0) {
+      return { ok: false, reason: 'an exception needs a written reason' };
+    }
+  } else if (task.state === 'backlog' && toState !== 'dropped') {
+    const missing = missingChecks(task, payload.dow, 'dor');
+    if (missing.length > 0) {
+      return {
+        ok: false,
+        reason: `cannot leave the backlog: ${missing.length} Definition of Ready check(s) unticked`,
+        missing,
+      };
+    }
+  }
+
+  if (input.force !== true && toState === 'done') {
+    const missing = missingChecks(task, payload.dow, 'dod');
+    if (missing.length > 0) {
+      return {
+        ok: false,
+        reason: `cannot enter done: ${missing.length} Definition of Done check(s) unticked`,
+        missing,
+      };
+    }
+  }
+
+  if (toState === 'dropped' && (input.reason === undefined || input.reason.trim().length === 0)) {
+    return { ok: false, reason: 'dropping a card needs a reason' };
+  }
+  if (task.state === 'done' && toState !== 'dropped' && (input.reason === undefined || input.reason.trim().length === 0)) {
+    return { ok: false, reason: 'reopening a finished card needs a reason' };
+  }
+  if (task.blockedReason !== null && (WIP_STATES as readonly string[]).includes(toState)) {
+    return { ok: false, reason: `blocked: ${task.blockedReason}` };
+  }
+  if (input.force !== true && task.classOfService !== 'expedite') {
+    const limit = limitFor(toState, payload.dow);
+    if (limit !== undefined) {
+      const occupied = filterCards(payload.tasks, { state: [toState] }).length;
+      if (occupied >= limit) {
+        return { ok: false, reason: `the ${STATE_LABEL[toState].toLowerCase()} limit is ${limit} and it is full` };
+      }
+    }
+  }
+  return { ok: true };
+}
+
+/** The states a card can be moved to, for the keyboard path and the card menu. */
+export function moveTargets(current: State): State[] {
+  return STATES.filter((state) => state !== current);
+}
+
+/**
+ * Apply a move to the local board so the drag lands instantly.
+ *
+ * This is a projection, not a decision: it recomputes exactly what the host's `moveTask` writes
+ * (state, position, started/finished points) so the optimistic view matches the server's answer. A
+ * mismatch is corrected by the next refresh, and a refusal rolls the card back to where it was.
+ */
+export function applyLocalMove(payload: BoardPayload, taskId: string, toState: State, position: number, nowIso: string): BoardPayload {
+  const tasks = payload.tasks.map((task) => {
+    if (task.id !== taskId) return task;
+    const started =
+      task.startedAt ?? ((WIP_STATES as readonly string[]).includes(toState) || toState === 'done' ? nowIso : null);
+    const finished = toState === 'done' ? (task.finishedAt ?? nowIso) : null;
+    return { ...task, state: toState, position, startedAt: started, finishedAt: finished, rev: task.rev + 1 };
+  });
+  const counts: Record<string, number> = {};
+  for (const state of STATES) counts[state] = 0;
+  for (const task of tasks) counts[task.state] = (counts[task.state] ?? 0) + 1;
+  return { ...payload, tasks, counts };
+}
+
+/** Only the states a filter is asking for, for the "state" quick chips. */
+export function activeStates(filter: ViewFilter): readonly State[] {
+  return filter.state ?? [];
+}
+
+/** Sort a card list by the state order — used by the list-style views, not the board. */
+export function byStateThenColumn(a: Task, b: Task): number {
+  const byState = stateIndex(a.state) - stateIndex(b.state);
+  return byState !== 0 ? byState : compareInColumn(a, b);
+}
