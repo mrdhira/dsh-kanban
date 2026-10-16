@@ -555,10 +555,10 @@ export function BoardPage(props: BoardProps): ReactElement {
           'div',
           { className: 'kb-notice kb-notice-error' },
           // Name everything a reader needs to tell "the route is down" from "the browser blocked it":
-          // the URL attempted, the origin the panel believes it is on, and the raw message. The first
-          // live failure said only "Failed to fetch" beside a working `curl`, which is exactly the
-          // ambiguity a CORS preflight creates — and it cost a round trip to diagnose.
-          `board unavailable: ${state.lastError ?? 'unknown'} — tried ${state.origin.origin}${API_PREFIX} (origin from ${state.origin.source})`
+          // the URL attempted, the origin it came from, and what the *document* says it is. The first
+          // live failure said only "Failed to fetch" beside a working `curl` — and whether that request
+          // is same-origin or cross-origin is the whole diagnosis, so the panel states it.
+          `board unavailable: ${state.lastError ?? 'unknown'} — tried ${state.origin.origin}${API_PREFIX} · document ${state.origin.document.protocol} ${state.origin.document.origin} · host origin from ${state.origin.source} · base ${state.origin.document.baseURI}`
         )
       : React.createElement(
           'div',

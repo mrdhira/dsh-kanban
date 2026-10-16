@@ -28,6 +28,7 @@ import {
   type LoadedBundle,
   type MountedView,
 } from './harness.ts';
+import { resolveOrigin } from '../lib/v1/client/api.js';
 
 const FULL_DOR = Object.fromEntries(
   ['outcome', 'acceptance', 'write-scope', 'estimate'].map((id) => [id, { at: '2026-10-01T00:00:00.000Z', by: 'human:dhira' }])
@@ -362,4 +363,25 @@ test('every CSS variable the panel uses is a theme token the app actually provid
   const defined = new Set([...bundle.matchAll(/(--kb-[a-z0-9-]+)\s*:/g)].map((match) => match[1] as string));
   const unknown = referenced.filter((name) => !THEME_TOKENS.has(name) && !defined.has(name));
   assert.deepEqual(unknown, [], 'these variables do not exist in the app theme and would fall back to literals');
+});
+
+test('the store reports the document origin, because same-origin is the whole diagnosis', () => {
+  const transport = { streamBaseUrl: 'http://127.0.0.1:19387/stream' };
+
+  // A static desktop page: `file://`, so the request is cross-origin and carries `Origin: null`.
+  const staticPage = resolveOrigin({ transport, location: { protocol: 'file:', origin: 'null', href: 'file:///app/index.html' } });
+  assert.equal(staticPage.origin, 'http://127.0.0.1:19387', 'the transport supplies the host origin');
+  assert.equal(staticPage.source, '__DSH_TRANSPORT__.streamBaseUrl');
+  assert.equal(staticPage.document.protocol, 'file:');
+  assert.equal(staticPage.document.baseURI, 'file:///app/index.html');
+
+  // A page served by the app: same-origin, no preflight, no CORS.
+  const served = resolveOrigin({ transport, location: { protocol: 'http:', origin: 'http://127.0.0.1:19387', href: 'http://127.0.0.1:19387/' } });
+  assert.equal(served.document.protocol, 'http:');
+  assert.equal(served.document.origin, 'http://127.0.0.1:19387');
+
+  // And with nothing at all, the fields exist rather than throwing.
+  const bare = resolveOrigin({});
+  assert.equal(bare.document.protocol, '(none)');
+  assert.equal(bare.source, 'fallback constant');
 });

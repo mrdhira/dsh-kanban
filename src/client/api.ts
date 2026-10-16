@@ -21,28 +21,45 @@ export interface OriginInfo {
   readonly origin: string;
   readonly source: string;
   readonly detail: string;
+  /**
+   * What the **document** says about itself.
+   *
+   * Not decoration: whether the panel's request is same-origin or cross-origin decides whether it can
+   * work at all. Same-origin needs no CORS and is never preflighted; a cross-origin request from a
+   * static page carries `Origin: null`, which this route must not grant with a wildcard. `Failed to
+   * fetch` beside a working `curl` is the ambiguity that costs a round trip, so the panel reports the
+   * facts instead of the symptom.
+   */
+  readonly document: { readonly protocol: string; readonly origin: string; readonly baseURI: string };
 }
+
+const UNKNOWN_DOCUMENT = { protocol: '(none)', origin: '(none)', baseURI: '(none)' } as const;
 
 /** Resolve the host origin as the page can see it. Pure, so it is testable without a browser. */
 export function resolveOrigin(scope: {
   readonly transport?: { readonly streamBaseUrl?: unknown };
-  readonly location?: { readonly protocol?: string; readonly origin?: string; readonly href?: string };
+  readonly location?: { readonly protocol?: string; readonly origin?: string; readonly href?: string; readonly baseURI?: string };
   readonly fallback?: string;
 } = {}): OriginInfo {
+  const document_ = {
+    protocol: scope.location?.protocol ?? UNKNOWN_DOCUMENT.protocol,
+    origin: scope.location?.origin ?? UNKNOWN_DOCUMENT.origin,
+    baseURI: scope.location?.baseURI ?? scope.location?.href ?? UNKNOWN_DOCUMENT.baseURI,
+  };
   const streamBaseUrl = scope.transport?.streamBaseUrl;
   if (typeof streamBaseUrl === 'string' && streamBaseUrl.length > 0) {
     try {
-      return { origin: new URL(streamBaseUrl).origin, source: '__DSH_TRANSPORT__.streamBaseUrl', detail: streamBaseUrl };
+      return { origin: new URL(streamBaseUrl).origin, source: '__DSH_TRANSPORT__.streamBaseUrl', detail: streamBaseUrl, document: document_ };
     } catch {
       /* an unparseable transport origin falls through to the document */
     }
   }
   const location_ = scope.location;
   if (location_?.protocol !== undefined && /^https?:$/.test(location_.protocol) && typeof location_.origin === 'string') {
-    return { origin: location_.origin, source: 'location.origin', detail: location_.href ?? location_.origin };
+    return { origin: location_.origin, source: 'location.origin', detail: location_.href ?? location_.origin, document: document_ };
   }
   const fallback = scope.fallback ?? 'http://127.0.0.1:19387';
-  return { origin: fallback, source: 'fallback constant', detail: 'no page transport and no http origin' };
+  return { origin: fallback, source: 'fallback constant', detail: 'no page transport and no http origin', document: document_ };
 }
 
 /**
