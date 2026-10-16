@@ -26,7 +26,7 @@ import { join } from 'node:path';
 
 import { apply, inject, name } from '../lib/v1/host/index.js';
 import { TOOL_NAMES } from '../lib/v1/host/tools.js';
-import { API_PREFIX } from '../lib/v1/host/api.js';
+import { API_PREFIX, isAllowedOrigin } from '../lib/v1/host/api.js';
 import type { DshHostContext, DshIncomingMessage, DshServerResponse, DshToolDefinition, DshWebRoute } from '../lib/v1/types/dsh.js';
 
 /** What the plugin declares it cannot work without. Kept here so a test cannot quietly drop one. */
@@ -655,5 +655,91 @@ test('refused (422): an agent may not import a pre-Kanban board', async () => {
     assert.equal(listed.board.tasks.length, 0, 'nothing was smuggled in');
   } finally {
     box.restore();
+  }
+});
+
+// ------------------------------------------------------------------ CORS and the preflight
+
+test('a browser preflight from the local GUI is answered, because it is sent before a plain GET', async () => {
+  // The panel sends `x-kanban-actor` and a JSON content type, so the browser sends OPTIONS first —
+  // even for a GET. This route answered that with its own `404 no route for OPTIONS /board`, the
+  // preflight failed, and the panel reported `Failed to fetch` while `curl` to the same URL returned
+  // 200. A working server and an unreachable one, decided by whether a browser was asking.
+  const box = sandbox();
+  try {
+    const host = fakeHost(INJECTED, {});
+    await boot(host, box.home);
+    const route = host.routes[0] as DshWebRoute;
+
+    const call = await callRoute(route, 'OPTIONS', `${API_PREFIX}/board`, undefined, {
+      origin: 'http://127.0.0.1:19387',
+      'access-control-request-method': 'GET',
+      'access-control-request-headers': 'x-kanban-actor',
+    });
+    assert.equal(call.status, 204);
+    assert.equal(call.headers['access-control-allow-origin'], 'http://127.0.0.1:19387');
+    assert.match(call.headers['access-control-allow-methods'] ?? '', /GET/);
+    assert.match(call.headers['access-control-allow-headers'] ?? '', /x-kanban-actor/);
+    assert.equal(call.headers['vary'], 'Origin', 'the answer depends on the request origin');
+    assert.equal(call.body, '');
+  } finally {
+    box.restore();
+  }
+});
+
+test('a foreign page gets no CORS grant — the route is unauthenticated, so this is the whole fence', async () => {
+  const box = sandbox();
+  try {
+    const host = fakeHost(INJECTED, {});
+    await boot(host, box.home);
+    const route = host.routes[0] as DshWebRoute;
+
+    // The plugin prefix route sits outside the app's auth fence (curl reaches it with no token), so
+    // an unauthenticated mutate is a real cross-site write. The allowlist is loopback-only, not `*`.
+    const preflight = await callRoute(route, 'OPTIONS', `${API_PREFIX}/board`, undefined, {
+      origin: 'https://evil.example',
+    });
+    assert.equal(preflight.status, 204);
+    assert.equal(preflight.headers['access-control-allow-origin'], undefined, 'no grant, so the browser blocks it');
+
+    const read = await callRoute(route, 'GET', `${API_PREFIX}/health`, undefined, { origin: 'https://evil.example' });
+    assert.equal(read.status, 200, 'a non-browser caller is unaffected');
+    assert.equal(read.headers['access-control-allow-origin'], undefined);
+  } finally {
+    box.restore();
+  }
+});
+
+test('an ordinary read from the local GUI carries the grant', async () => {
+  const box = sandbox();
+  try {
+    const host = fakeHost(INJECTED, {});
+    await boot(host, box.home);
+    const route = host.routes[0] as DshWebRoute;
+    for (const origin of ['http://127.0.0.1:19387', 'http://localhost:19387', 'http://[::1]:19387']) {
+      const call = await callRoute(route, 'GET', `${API_PREFIX}/health`, undefined, { origin });
+      assert.equal(call.status, 200);
+      assert.equal(call.headers['access-control-allow-origin'], origin, `${origin} is the app's own GUI`);
+    }
+  } finally {
+    box.restore();
+  }
+});
+
+test('the origin allowlist is loopback-only and rejects everything else', () => {
+  for (const allowed of ['http://127.0.0.1:19387', 'http://localhost:19387', 'https://localhost', 'http://[::1]:19387']) {
+    assert.equal(isAllowedOrigin(allowed), true, allowed);
+  }
+  for (const refused of [
+    undefined,
+    '',
+    'https://evil.example',
+    'https://127.0.0.1.evil.example',
+    'file://',
+    'null',
+    'not a url',
+    'http://192.168.1.5:19387',
+  ]) {
+    assert.equal(isAllowedOrigin(refused), false, String(refused));
   }
 });

@@ -23,6 +23,7 @@ import type { BoardStore, BoardState } from './store.js';
 import { selectedTask } from './store.js';
 import { ageBand, ageDays, classLabel, columnsOf, formatAge, priorityBadge, type Column } from './model.js';
 import { beginDrag, dragOver, dropTarget, indexFromPointer, keyboardTarget, type DragState } from './dnd.js';
+import { API_PREFIX } from './api.js';
 import { STYLES } from './styles.js';
 import { CHECK_LABEL, type CheckId, type State, type Task } from '../store/types.js';
 
@@ -553,7 +554,11 @@ export function BoardPage(props: BoardProps): ReactElement {
       ? React.createElement(
           'div',
           { className: 'kb-notice kb-notice-error' },
-          `board unavailable: ${state.lastError ?? 'unknown'} — the host route did not answer`
+          // Name everything a reader needs to tell "the route is down" from "the browser blocked it":
+          // the URL attempted, the origin the panel believes it is on, and the raw message. The first
+          // live failure said only "Failed to fetch" beside a working `curl`, which is exactly the
+          // ambiguity a CORS preflight creates — and it cost a round trip to diagnose.
+          `board unavailable: ${state.lastError ?? 'unknown'} — tried ${state.origin.origin}${API_PREFIX} (origin from ${state.origin.source})`
         )
       : React.createElement(
           'div',

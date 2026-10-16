@@ -7,7 +7,7 @@
 #   ./install.sh --remove   unregister the bundle again
 #
 # The plugin lives inside the profile directory (same as dsh-session-metrics and
-# dsh-skills-manager), so it is already at the right place. This script registers it in the
+# dsh-skill-managers), so it is already at the right place. This script registers it in the
 # profile's package.json and runs pnpm install, which is what creates the
 # `node_modules/dsh-kanban` symlink the Loader resolves the package name through.
 #

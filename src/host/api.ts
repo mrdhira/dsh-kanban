@@ -71,11 +71,50 @@ export interface ApiDeps {
   readonly todoMdPath: string;
 }
 
+/**
+ * Which origins may call this route from a browser.
+ *
+ * The route deliberately sits **outside** the app's own auth fence (a plugin prefix route is not
+ * wrapped by it — verified with `curl`, which reaches `/api/kanban/health` with no token). That is
+ * the accepted loopback trust model, but it makes CORS the *only* thing between this board and any
+ * web page Dhira happens to have open: an unauthenticated `POST /api/kanban/mutate` would be a real
+ * cross-site write. So the allowlist is not `*` — it is **loopback hosts only**, which covers the
+ * app's own GUI whatever it is called (`127.0.0.1`, `localhost`, `[::1]`) and excludes every public
+ * site. DNS rebinding does not help an attacker: it changes what the *server* resolves to, while the
+ * page's `Origin` stays `http://evil.example`, which this refuses.
+ */
+export function isAllowedOrigin(origin: string | undefined): boolean {
+  if (origin === undefined || origin.length === 0) return false;
+  try {
+    const url = new URL(origin);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+    const host = url.hostname.replace(/^\[|\]$/g, '');
+    return host === '127.0.0.1' || host === 'localhost' || host === '::1';
+  } catch {
+    return false;
+  }
+}
+
+/** The CORS headers for one request, or none when the origin is not the local GUI. */
+export function corsHeaders(origin: string | undefined): Record<string, string> {
+  if (!isAllowedOrigin(origin)) return {};
+  return {
+    'access-control-allow-origin': origin as string,
+    'access-control-allow-methods': 'GET, POST, OPTIONS',
+    'access-control-allow-headers': 'content-type, x-kanban-actor',
+    'access-control-max-age': '600',
+    // The answer depends on the request's Origin, so it must not be cached as though it did not.
+    vary: 'Origin',
+  };
+}
+
 function send(res: DshServerResponse, status: number, body: string, contentType = 'application/json; charset=utf-8'): void {
+  const extra = (res as { __kanbanCors?: Record<string, string> }).__kanbanCors ?? {};
   res.writeHead(status, {
     'content-type': contentType,
     'content-length': String(Buffer.byteLength(body)),
     'cache-control': 'no-store',
+    ...extra,
   });
   res.end(body);
 }
@@ -420,6 +459,26 @@ export function createApiHandler(deps: ApiDeps): DshWebRoute['handler'] {
     const method = (req.method ?? 'GET').toUpperCase();
     const url = new URL(req.url ?? API_PREFIX, 'http://127.0.0.1');
     const path = url.pathname;
+
+    /**
+     * CORS, and the preflight that a custom header forces.
+     *
+     * The panel sends `x-kanban-actor` and `content-type: application/json`, neither of which is a
+     * CORS-safelisted value, so the browser sends `OPTIONS` first — **even for a GET**. This route
+     * answered that with its own `404 no route for OPTIONS /board`, the preflight failed, and the
+     * panel showed `board unavailable: Failed to fetch — the host route did not answer` while
+     * `curl` to the very same URL returned 200. A working server and an unreachable one, decided by
+     * whether a browser was asking.
+     */
+    const cors = corsHeaders(header(req, 'origin'));
+    (res as { __kanbanCors?: Record<string, string> }).__kanbanCors = cors;
+    if (method === 'OPTIONS') {
+      // 204 either way; without `access-control-allow-origin` a foreign page's preflight still fails,
+      // which is the point of the allowlist rather than a wildcard.
+      res.writeHead(204, { 'content-length': '0', 'cache-control': 'no-store', ...cors });
+      res.end();
+      return;
+    }
 
     if (!path.startsWith(API_PREFIX)) {
       sendJson(res, 404, { ok: false, code: 'not-found', message: `nothing at ${path}` });
