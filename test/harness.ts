@@ -209,10 +209,14 @@ export interface MountedView {
   findAll(selector: string): Element[];
   text(): string;
   click(selector: string): Promise<void>;
+  /** Move the document's focus to a node, the way `Tab` would. */
+  focus(selector: string): Promise<void>;
   /** Fire a React-recognised key event. */
   key(selector: string, key: string, options?: { altKey?: boolean }): Promise<void>;
   /** Fire the three drag events a drop is built from. */
   drag(fromSelector: string, toSelector: string, clientY?: number): Promise<void>;
+  /** Fire only the `dragstart`, so a case can inspect the board while a drag is live. */
+  dragStart(selector: string): Promise<void>;
   type(selector: string, value: string): Promise<void>;
   /** True when the node exists — never hand a DOM node to an assertion. */
   has(selector: string): boolean;
@@ -298,6 +302,21 @@ export function mount(loaded: LoadedBundle, registration: Registration, props: R
       });
     },
 
+    async focus(selector) {
+      const node = container.querySelector(selector);
+      assert.ok(node !== null, `expected ${selector} to exist`);
+      // The jsdom realm's own constructor, not a Node global: `HTMLElement` is not defined here.
+      const DomElement = (container.ownerDocument.defaultView as unknown as { HTMLElement: typeof HTMLElement }).HTMLElement;
+      if (!(node instanceof DomElement)) {
+        assert.fail(`expected ${selector} to be an element that can hold focus`);
+      }
+      await act(async () => {
+        // A dispatched `click` does not move focus in jsdom, the way it does in a browser, so a
+        // case about focus has to place it explicitly.
+        node.focus();
+      });
+    },
+
     async drag(fromSelector, toSelector, clientY = 10) {
       const from = container.querySelector(fromSelector);
       const to = container.querySelector(toSelector);
@@ -312,6 +331,15 @@ export function mount(loaded: LoadedBundle, registration: Registration, props: R
       });
       await act(async () => {
         to.dispatchEvent(nativeEvent('drop', { clientY, dataTransfer }));
+      });
+    },
+
+    async dragStart(selector) {
+      const from = container.querySelector(selector);
+      assert.ok(from !== null, `expected ${selector} to exist`);
+      const dataTransfer = { setData: () => {}, effectAllowed: '' };
+      await act(async () => {
+        from.dispatchEvent(nativeEvent('dragstart', { dataTransfer }));
       });
     },
 

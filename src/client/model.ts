@@ -64,7 +64,13 @@ export interface ViewFilter {
   readonly search?: string;
 }
 
-export const EMPTY_FILTER: ViewFilter = {};
+/**
+ * The "nothing is filtered" value.
+ *
+ * Frozen because it is shared: a caller that spread it into a new filter and then wrote a field
+ * would otherwise edit this constant, and every later board would open with the last selection.
+ */
+export const EMPTY_FILTER: ViewFilter = Object.freeze({});
 
 /** One drawn column. */
 export interface Column {
@@ -154,6 +160,39 @@ export function formatAge(days: number | null): string {
 /** `P0`, `P1` — the ribbon's text. */
 export function priorityBadge(priority: Priority): string {
   return PRIORITY_LABEL[priority].split(' ')[0] ?? priority;
+}
+
+/**
+ * `P1 · high` — the badge plus the word.
+ *
+ * The word is not decoration: the amber `P1` fails AA on the light theme's white (≈2.15:1), so the
+ * meaning has to survive without the colour. `priorityBadge` stays the short form for the
+ * generated projection, which is text on a terminal rather than a 12px badge.
+ */
+export function priorityText(priority: Priority): string {
+  const [code = priority, ...rest] = PRIORITY_LABEL[priority].split(' ');
+  return rest.length === 0 ? code : `${code} · ${rest.join(' ')}`;
+}
+
+/**
+ * The code alone (`P0`), for the card's top row.
+ *
+ * That row carries the id, the priority and the age inside a 236px lane. Spelling the priority out
+ * there wrapped the row and split the id mid-token; the word belongs in the chip row, which wraps
+ * gracefully. The drawer and the CLI keep the full `priorityText`.
+ */
+export function priorityCode(priority: Priority): string {
+  return PRIORITY_LABEL[priority].split(' ')[0] ?? priority;
+}
+
+/**
+ * The priority's word, but only where it earns the space: P0 and P1 are the two a reader must not
+ * miss. P2-P4 return null, so the common card stays quiet.
+ */
+export function priorityWord(priority: Priority): string | null {
+  if (priority !== 'p0-critical' && priority !== 'p1-high') return null;
+  const rest = PRIORITY_LABEL[priority].split(' ').slice(1).join(' ');
+  return rest.length === 0 ? null : rest;
 }
 
 export function classLabel(task: Task): string {
@@ -280,6 +319,49 @@ export function applyLocalMove(payload: BoardPayload, taskId: string, toState: S
 /** Only the states a filter is asking for, for the "state" quick chips. */
 export function activeStates(filter: ViewFilter): readonly State[] {
   return filter.state ?? [];
+}
+
+/** The states the "state" quick chips can toggle, in board order. */
+export function filterableStates(): readonly State[] {
+  return BOARD_STATES;
+}
+
+/** Is a filter asking for anything at all? */
+export function hasFilter(filter: ViewFilter): boolean {
+  return Object.values(filter).some((value) => value !== undefined);
+}
+
+/**
+ * Do two filters ask for the same board?
+ *
+ * The toolbar needs this to say which view is current: a saved view stores the filter object and
+ * the store holds another copy of it, so identity comparison would mark every view inactive the
+ * moment it was clicked. Canonicalised as sorted `key=JSON` pairs, which is stable for the arrays
+ * a filter can carry (`state`, `priority`) as well as its scalars.
+ */
+export function sameFilter(a: ViewFilter, b: ViewFilter): boolean {
+  const canonical = (filter: ViewFilter): string =>
+    Object.entries(filter)
+      .filter(([, value]) => value !== undefined)
+      .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
+      .sort()
+      .join('&');
+  return canonical(a) === canonical(b);
+}
+
+/** `p * 100`, without inventing a decimal place: `0.855` stays `85.5%`, not `86%`. */
+export function formatPercent(p: number): string {
+  const percent = p * 100;
+  return Number.isInteger(percent) ? String(percent) : percent.toFixed(1);
+}
+
+/** An ISO instant as the history line reads it: `2026-10-01 00:00:00Z`, or the input if unparseable. */
+export function formatStamp(iso: string): string {
+  const millis = Date.parse(iso);
+  if (Number.isNaN(millis)) return iso;
+  const date = new Date(millis);
+  const pad = (value: number): string => String(value).padStart(2, '0');
+  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}Z`;
 }
 
 /** Sort a card list by the state order — used by the list-style views, not the board. */

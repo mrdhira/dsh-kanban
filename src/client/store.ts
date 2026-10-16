@@ -48,6 +48,20 @@ export interface BoardState {
   readonly lastError: string | null;
 }
 
+/**
+ * The two things an agent's `kanban_move` can send that a bare drag cannot: an explicit
+ * `position`, a written exception. They ride on the same call so the pointer, the keyboard and
+ * the panel's Exception control all pass through `checkMoveLocally` and the host's `checkMove`.
+ */
+export interface MoveOptions {
+  /** Except a gate. The host records the exception on the card; the reason is required. */
+  readonly force?: boolean;
+  /** Required when dropping, reopening a finished card, or forcing a move. */
+  readonly reason?: string;
+  /** Order inside the target column, exactly as `kanban_move.toPosition` means it. */
+  readonly position?: number;
+}
+
 export interface BoardStore {
   getSnapshot(): BoardState;
   subscribe(listener: () => void): () => void;
@@ -58,7 +72,7 @@ export interface BoardStore {
   select(id: string | null): Promise<void>;
   notice(message: string | null, kind?: Notice['kind'], missing?: readonly string[]): void;
   create(title: string, extra?: Record<string, unknown>): Promise<void>;
-  move(id: string, toState: State, index?: number): Promise<void>;
+  move(id: string, toState: State, index?: number, options?: MoveOptions): Promise<void>;
   tick(id: string, gate: 'dor' | 'dod', checkId: CheckId, done: boolean): Promise<void>;
   patch(id: string, patch: Record<string, unknown>): Promise<void>;
   comment(id: string, body: string): Promise<void>;
@@ -209,24 +223,44 @@ export function createBoardStore(transport: BoardTransport, options: BoardStoreO
       await write('create', { input: { title: trimmed, ...extra } });
     },
 
-    async move(id, toState, index) {
+    async move(id, toState, index, options) {
       const payload = state.payload;
       if (payload === null) return;
       const task = payload.tasks.find((entry) => entry.id === id);
       if (task === undefined) return;
 
-      const verdict = checkMoveLocally({ payload, task, toState });
+      const force = options?.force === true;
+      const reason = options?.reason;
+      // The same order the host checks in: the exception first, so the panel's verdict agrees with
+      // the refusal the host would send back.
+      const verdict = checkMoveLocally({
+        payload,
+        task,
+        toState,
+        ...(force ? { force: true } : {}),
+        ...(reason === undefined ? {} : { reason }),
+      });
       if (!verdict.ok) {
         set({ notice: refusalNotice(new Refusal(422, 'policy', verdict.reason, verdict.missing ?? [])) });
         return;
       }
 
       const target = filterCards(payload.tasks, { state: [toState] }).filter((entry) => entry.id !== id);
-      const position = task.state === toState && index === undefined ? task.position : positionForIndex(target, index ?? target.length);
+      // An explicit position is the agent's `toPosition`: it is the order itself, not a drop index.
+      const position =
+        options?.position ??
+        (task.state === toState && index === undefined ? task.position : positionForIndex(target, index ?? target.length));
 
       await write(
         'move',
-        { id, toState, toPosition: position, expectedRev: task.rev },
+        {
+          id,
+          toState,
+          toPosition: position,
+          expectedRev: task.rev,
+          ...(force ? { force: true } : {}),
+          ...(reason === undefined ? {} : { reason }),
+        },
         () => applyLocalMove(payload, id, toState, position, now().toISOString())
       );
     },
