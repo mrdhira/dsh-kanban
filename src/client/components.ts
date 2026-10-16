@@ -44,6 +44,13 @@ export interface BoardProps {
     readonly visibilityState?: string;
     readonly head?: { append(node: unknown): unknown };
     getElementById(id: string): { remove(): void } | null;
+    /**
+     * The document's own window, when it has one.
+     *
+     * Only the commit record uses it. It is optional and stably typed because the harness hands the
+     * panel a bare document, and a panel that required a window would fail there for no reason.
+     */
+    readonly defaultView?: { readonly __mark?: (key: string, value: unknown) => void } | null;
   };
 }
 
@@ -1150,8 +1157,31 @@ export function BoardPage(props: BoardProps): ReactElement {
   const [hostOpen, setHostOpen] = React.useState(false);
   /** Live card nodes, so a closing drawer can return focus to the card it was opened from. */
   const cardNodes = React.useRef<Map<string, CardNode>>(new Map());
+  /** The board revision this commit has drawn. Compared against the store to prove the DOM is current. */
+  const renderedRev = state.payload?.rev ?? null;
 
   React.useEffect(() => store.start(), [store]);
+
+  /**
+   * Record what this mount has committed, for whoever is watching the page rather than the store.
+   *
+   * A page-hosted observer (the drag probe) has to tell "the mount I asked for has drawn its board"
+   * from "a board is on screen" — the second is true of the *previous* panel too, which is exactly how
+   * a coordinate comes to be measured against an element the commit is about to replace. It also has
+   * to tell "the store recorded a staged drop" from "the drawer that asks for the reason is on
+   * screen", and only the second can carry `data-staged` and a focused field. Both facts are commit
+   * facts, so both are published here rather than inferred from a poll: the store is the panel's
+   * state, but a commit is what a pointer can hit and a keyboard can focus. The record is inert when
+   * nothing on the page asked for it, which is every environment except that probe.
+   */
+  React.useEffect(() => {
+    // Through the document the panel was handed, not the bundle realm's global: the harness evaluates
+    // the bundle in a context that has the document but not necessarily a `window` of its own.
+    const page = documentRef?.defaultView;
+    if (typeof page?.__mark !== 'function') return;
+    page.__mark('stageable', true);
+    page.__mark('renderedRev', renderedRev);
+  }, [renderedRev, documentRef]);
 
   /**
    * The announcer says a thing once; it does not keep it.

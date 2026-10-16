@@ -45,8 +45,28 @@
  * - a real drag from a card to a legal lane moves the card and sends exactly one `move`;
  * - a real drag onto Dropped sends **no** mutation, leaves the card where it was, and opens that
  *   card's drawer with the drop staged and the reason field focused;
- * - the drawer's own `Move … to Dropped` stages into the drawer that is already open;
+ * - the drawer's own `Move … To Dropped` stages into the drawer that is already open;
  * - `Alt+→` into Dropped stages rather than sending.
+ *
+ * ## Waiting, and why every wait is on a commit
+ *
+ * This script was flaky when it first ran — 3 of 6 runs failed, in two different observations, always
+ * with nothing moved. The cause was the wait, not the panel (the evidence is in `DESIGN.md`'s note on
+ * the probe): two of the three reads raced a commit.
+ *
+ * - **The board can be replaced under a gesture.** The panel renders a fresh tree for each observation,
+ *   and "a card is in the dropped lane" is true of the *previous* tree as well. A coordinate measured
+ *   against a node the commit is about to remove is a coordinate with nothing behind it, and the drag
+ *   events then arrive at no lane at all — a silent no-op that is indistinguishable from a refusal.
+ *   `fresh` therefore waits for the facts *this* mount publishes: its own board revision, the revision
+ *   the DOM has drawn, and its effects having run.
+ * - **The drawer's attributes arrive one commit after the drawer.** `stageDrop` records the stage and
+ *   only then awaits the drawer's read, and the Drop group holding the reason field is revealed by an
+ *   effect. Reading the drawer as soon as it exists is reading the state in between, and reports a
+ *   panel that staged correctly as one that did not.
+ * - **A dispatched drop or key can miss.** Both are retried, a bounded number of times and with
+ *   freshly measured coordinates, because a miss and a refusal look identical from here. The
+ *   observations still fail loudly, naming what they were looking at, once the attempts are spent.
  *
  * ## Run
  *
@@ -78,6 +98,20 @@ const TEMP_DIR = mkdtempSync(join(tmpdir(), 'dsh-kanban-drag-'));
 const VIEW = { width: 1280, height: 900 } as const;
 /** Per-command bound. A drag step that never returns is a failure, not a reason to hang the guard. */
 const COMMAND_TIMEOUT_MS = 20_000;
+/**
+ * How long one dispatch of the drop is allowed to take to show.
+ *
+ * A drop that has not landed inside this is retried with freshly measured coordinates. The two ways a
+ * dispatch can miss are both transient: the coordinate can belong to an element the renderer replaced
+ * in the same frame, and the panel's own drag state lives in React state, which is flushed in a
+ * microtask and can lag the DOM event by a fraction of a frame. Exhausting the attempts fails the
+ * observation; it never hangs.
+ */
+const DRAG_ATTEMPT_TIMEOUT_MS = 1_500;
+/** The most dispatch attempts one gesture is allowed. Bounded on purpose: this waits, it never hangs. */
+const DRAG_ATTEMPTS = 12;
+/** How long the page itself is given to show a committed fact: a board, a drawer, a focused field. */
+const SETTLE_TIMEOUT_MS = 10_000;
 
 // ------------------------------------------------------------------ the page
 
@@ -203,6 +237,15 @@ window.addEventListener('error', function (event) {
   window.__mountError = null;
   window.__root = null;
   window.__epoch = 0;
+  // What the panel has committed, one record per mount, filled in by the component's own effects.
+  // Kept in a plain object so a read can never observe two different fields from two different
+  // mounts. Read only through __probeState below.
+  window.__mountState = { stageable: null, boardRev: null, renderedRev: null, waitsForStage: null };
+  window.__mark = function (key, value) {
+    var next = Object.assign({}, window.__mountState);
+    next[key] = value;
+    window.__mountState = next;
+  };
   window.__mount = function () {
     try {
       // One React root for the page's life, re-rendered under a new key for each observation. React
@@ -212,11 +255,16 @@ window.addEventListener('error', function (event) {
       // its own effect cleanup, so one observation cannot read another's board.
       window.__epoch += 1;
       if (window.__root === null) window.__root = window.ReactDOM.createRoot(document.getElementById('root'));
+      // The panel this render mounts, kept where __probeState can reach it, and a fresh record so no
+      // wait can be satisfied by the previous mount's facts.
+      var panelStore = window.__bundle.createStore();
+      window.__panelStore = panelStore;
+      window.__mountState = { stageable: null, boardRev: null, renderedRev: null, waitsForStage: null };
       window.__root.render(
         window.React.createElement(window.__bundle.__panel, {
           key: 'panel-' + window.__epoch,
           React: window.React,
-          store: window.__bundle.createStore(),
+          store: panelStore,
           documentRef: document
         })
       );
@@ -265,6 +313,17 @@ window.addEventListener('error', function (event) {
         var over = document.querySelector('.kb-lane-over');
         return over === null ? null : over.getAttribute('data-lane');
       })(),
+      // What the panel has committed, straight from the component's own effects. These are what make
+      // a wait mean "the mount on screen is ready" rather than "a render was asked for": the board
+      // revision the store holds, the revision the DOM has actually drawn, whether the mount's
+      // handlers are attached, and whether a staging call is still waiting for its drawer.
+      boardRev: (function () {
+        var payload = window.__panelStore === undefined ? null : window.__panelStore.getSnapshot().payload;
+        return payload === null ? null : payload.rev;
+      })(),
+      renderedRev: window.__mountState.renderedRev,
+      stageable: window.__mountState.stageable === true,
+      awaitingStage: window.__mountState.waitsForStage !== null,
       mutations: mutations,
       mutateBodies: calls.filter(function (call) { return call.url.indexOf('/mutate') !== -1; }).map(function (call) { return call.body; })
     };
@@ -515,26 +574,21 @@ const dragData = (point: Box): Record<string, unknown> => ({ x: Math.round(point
  * blocking native loop, so the three protocol calls that begin the drag all return. The drag events
  * themselves are then dispatched at the lane's measured centre.
  */
-async function dragCardToLane(cdp: Cdp, card: string, lane: string): Promise<{ painted: string }> {
+async function dragCardToLane(
+  cdp: Cdp,
+  card: string,
+  lane: string,
+  settled: (current: ProbeState) => boolean
+): Promise<{ painted: string }> {
   let painted = '';
   await cdp.send('Input.setInterceptDrags', { enabled: true });
   // The card is scrolled to itself first (a no-op when the whole row fits), so the press lands on the
-  // card whatever the viewport; `showLane` then checks the *target* really is inside the window before
-  // any coordinate is taken from it.
+  // card whatever the viewport. The drop point is deliberately **not** measured here: the drag
+  // re-measures it for every attempt, because a drag changes the layout and a coordinate is only good
+  // for the frame it was measured in. `showLane` also proves the card is inside the window before any
+  // coordinate is taken from it.
   await showLane(cdp, card);
   const from = await centreOf(cdp, card);
-  await showLane(cdp, lane);
-  const to = await lanePoint(cdp, lane);
-  const over = await cdp.evaluate<string>(`(function () {
-    var node = document.elementFromPoint(${String(Math.round(to.x))}, ${String(Math.round(to.y))});
-    var laneNode = node === null ? null : node.closest('[data-lane]');
-    return laneNode === null ? 'none' : String(laneNode.getAttribute('data-lane'));
-  })()`);
-  // A coordinate that is not over the lane it was measured for produces a silently wrong drop — this
-  // probe made exactly that mistake once, landing on Done — so the assumption is checked, not assumed.
-  if (over !== lane.replace(/^\[data-lane="|"\]$/g, '')) {
-    throw new Error(`the point for ${lane} is over ${over}, so the layout and the measurement disagree`);
-  }
 
   // The panel's drag state is set by the card's own `dragstart`, which Chrome fires from the move
   // below at its own moment. A `dragOver`/`drop` that arrives before it reaches `onDrop` with
@@ -549,19 +603,82 @@ async function dragCardToLane(cdp: Cdp, card: string, lane: string): Promise<{ p
   await cdp.send('Input.dispatchMouseEvent', mouse('mouseMoved', { x: from.x + 4, y: from.y + 4 }));
   await untilEval(cdp, 'window.__dragSeen === true', 'the card to start a drag');
 
-  await cdp.send('Input.dispatchDragEvent', { type: 'dragEnter', ...dragData(to) });
-  await cdp.send('Input.dispatchDragEvent', { type: 'dragOver', ...dragData(to) });
-  // Read the legal-target class **while the gaze is live**: this is the affordance itself, and it is
-  // read from the page's own DOM rather than inferred from the drop that follows.
-  await new Promise((resolve) => setTimeout(resolve, 80));
-  painted = await cdp.evaluate<string>('String((document.querySelector(".kb-lane-over") || {}).getAttribute ? document.querySelector(".kb-lane-over").getAttribute("data-lane") : "")');
-  // `dragOver` is where the lane's own `setDrag(dragOver(...))` lands, so the drop below is the one a
-  // human's release would produce rather than a second, independent call.
-  await cdp.send('Input.dispatchDragEvent', { type: 'drop', ...dragData(to) });
+  // The drop is **retried with freshly measured coordinates**, and it has to be. Two ways a dispatch
+  // can miss were observed in this probe, and both are transient:
+  //
+  // - the drag events are hit-tested by Chrome against the *current* layout, so a coordinate measured
+  //   a frame earlier can land on an element the commit replaced — a run of this script showed
+  //   `dragenter`/`dragover`/`drop` all arriving with no `[data-lane]` ancestor at all;
+  // - `dragover` and `drop` both read the panel's drag state, which lives in React state and is
+  //   flushed in a microtask, so an event dispatched in the same frame as `dragstart` can reach
+  //   `onDrop` while `drag === null` and be dropped on the floor.
+  //
+  // Either way the gesture is silently a no-op: nothing moves, nothing is staged, and it looks exactly
+  // like the product refusing the move. A retry with a fresh measurement is what tells the two apart.
+  // It is bounded, and the observation still fails loudly once the attempts are spent.
+  for (let attempt = 0; attempt < DRAG_ATTEMPTS; attempt += 1) {
+    const point = await pointOnLane(cdp, lane);
+    await cdp.send('Input.dispatchDragEvent', { type: 'dragEnter', ...dragData(point) });
+    await cdp.send('Input.dispatchDragEvent', { type: 'dragOver', ...dragData(point) });
+    // Read the legal-target class **while the gaze is live**: this is the affordance itself, and it is
+    // read from the page's own DOM rather than inferred from the drop that follows.
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    painted = await cdp.evaluate<string>('String((document.querySelector(".kb-lane-over") || {}).getAttribute ? document.querySelector(".kb-lane-over").getAttribute("data-lane") : "")');
+    // `dragOver` is where the lane's own `setDrag(dragOver(...))` lands, so the drop below is the one a
+    // human's release would produce rather than a second, independent call.
+    await cdp.send('Input.dispatchDragEvent', { type: 'drop', ...dragData(point) });
+    try {
+      await until(cdp, settled, 'the drop to land', DRAG_ATTEMPT_TIMEOUT_MS);
+      await cdp.send('Input.dispatchMouseEvent', mouse('mouseReleased', point, { clickCount: 1 }));
+      await cdp.send('Input.setInterceptDrags', { enabled: false });
+      return { painted };
+    } catch {
+      // Not landed: leave the pointer where a human's would be, and dispatch again from a fresh measure.
+      await new Promise((resolve) => setTimeout(resolve, 120));
+    }
+  }
 
-  await cdp.send('Input.dispatchMouseEvent', mouse('mouseReleased', to, { clickCount: 1 }));
+  await cdp.send('Input.dispatchMouseEvent', mouse('mouseReleased', from, { clickCount: 1 }));
   await cdp.send('Input.setInterceptDrags', { enabled: false });
-  return { painted };
+  throw new Error(
+    `the drop on ${lane} did not land in ${String(DRAG_ATTEMPTS)} attempts (paintedWhileOver=${JSON.stringify(painted)}; last state: ${JSON.stringify((await state(cdp)).lanes)})`
+  );
+}
+
+/**
+ * A point over the lane itself, checked against the element Chrome will hit-test.
+ *
+ * The lane's own centre would land on whatever card happens to be there, and a card is not inside a
+ * `[data-lane]` from the drop's point of view, so the lane's header row — always part of the lane and
+ * never a card — is where the pointer goes. The measurement is re-checked against `elementFromPoint`
+ * immediately before it is used: a coordinate that is not over the lane it was measured for produces
+ * a silently wrong drop (this probe landed on *Done* for exactly that reason once), and measuring
+ * alone cannot see that.
+ */
+async function pointOnLane(cdp: Cdp, lane: string): Promise<Box> {
+  await showLane(cdp, lane);
+  const point = await lanePoint(cdp, lane);
+  const over = await cdp.evaluate<string>(`(function () {
+    var node = document.elementFromPoint(${String(Math.round(point.x))}, ${String(Math.round(point.y))});
+    var laneNode = node === null ? null : node.closest('[data-lane]');
+    return laneNode === null ? 'none' : String(laneNode.getAttribute('data-lane'));
+  })()`);
+  if (over !== lane.replace(/^\[data-lane="|"\]$/g, '')) {
+    throw new Error(`the point for ${lane} is over ${over}, so the layout and the measurement disagree`);
+  }
+  return point;
+}
+
+/**
+ * Activate one control, and say whether the element was there to activate.
+ *
+ * A button that is not rendered yet is the failure the caller is about to assert on; reporting it here
+ * keeps the failure attached to the step that missed rather than to the wait that followed.
+ */
+async function click(cdp: Cdp, selector: string): Promise<boolean> {
+  return cdp.evaluate<boolean>(
+    `(function () { var node = document.querySelector(${JSON.stringify(selector)}); if (node === null) return false; node.dispatchEvent(new MouseEvent('click', { bubbles: true })); return true; })()`
+  );
 }
 
 /** Wait until a boolean expression in the page is true, or fail with what it was. */
@@ -593,6 +710,14 @@ interface ProbeState {
   reasonValue: string | null;
   moreOpen: boolean;
   overLane: string | null;
+  /** The board revision the panel's store holds, or null before the first read lands. */
+  boardRev: number | null;
+  /** The board revision the DOM has actually drawn. Equal to `boardRev` only after a commit. */
+  renderedRev: number | null;
+  /** True once the mounted panel's own effects have run: its handlers are attached and it is live. */
+  stageable: boolean;
+  /** True while a staging call is still waiting for its drawer to commit. */
+  awaitingStage: boolean;
   mutations: number;
   mutateBodies: Array<Record<string, unknown>>;
 }
@@ -601,21 +726,66 @@ async function state(cdp: Cdp): Promise<ProbeState> {
   return cdp.evaluate<ProbeState>('window.__probeState()');
 }
 
-/** Wait until the page answers a predicate, so no observation races the render. */
-async function until(cdp: Cdp, predicate: (state: ProbeState) => boolean, what: string): Promise<ProbeState> {
-  const deadline = Date.now() + 5_000;
+/** Wait until the page answers a predicate, so no observation races the render. Bounded, always. */
+async function until(
+  cdp: Cdp,
+  predicate: (state: ProbeState) => boolean,
+  what: string,
+  timeoutMs = SETTLE_TIMEOUT_MS
+): Promise<ProbeState> {
+  const deadline = Date.now() + timeoutMs;
   let last = await state(cdp);
   while (Date.now() < deadline) {
     if (predicate(last)) return last;
     await new Promise((resolve) => setTimeout(resolve, 60));
     last = await state(cdp);
   }
-  throw new Error(`timed out waiting for ${what} (last state: ${JSON.stringify(last.lanes)})`);
+  // The diagnostic names the drawer as well as the lanes: the flaky observations both waited on a
+  // drawer, and a lane-only report is what made three different failures look like one identical one.
+  // A wait that cannot say what it was looking at is what let two of tonight's claims be wrong.
+  throw new Error(
+    `timed out waiting for ${what} (lanes: ${JSON.stringify(last.lanes)}; drawer=${String(last.drawer)} staged=${String(last.staged)} reason=${String(last.reasonPresent)} focused=${String(last.reasonFocused)} more=${String(last.moreOpen)} mutations=${String(last.mutations)})`
+  );
 }
 
+/**
+ * The drawer is open for this card **and** the commit that asks for the reason has landed.
+ *
+ * Not the same fact as "the drawer element exists": `stageDrop` records the stage and *then* awaits the
+ * drawer's read, and the drawer reveals the group the reason field lives in from an effect, so
+ * `data-staged` and the field arrive one commit after the drawer does. The old probe read the state in
+ * between and reported a panel that had staged correctly as one that had not.
+ */
+function staged(current: ProbeState, id: string, focused = false): boolean {
+  return (
+    current.drawer === id &&
+    current.staged === 'dropped' &&
+    current.reasonPresent &&
+    (!focused || current.reasonFocused)
+  );
+}
+
+/**
+ * Mount a new panel and wait for the board **that panel** rendered.
+ *
+ * The old wait was "some card is in the dropped lane", which a previous mount's DOM still satisfies:
+ * the board is then replaced while the gesture is in flight, a coordinate is measured against an
+ * element the commit is about to remove, and the drag events arrive at a node that is no longer inside
+ * a lane — a silent no-op that looks exactly like a refusal. The wait is now on the panel's own
+ * commit: the mount's own board revision, the revision the DOM has drawn, and the mount's effects
+ * having run. No earlier mount can satisfy it.
+ */
 async function fresh(cdp: Cdp): Promise<void> {
   await cdp.evaluate('window.__reset(); window.__mount(); undefined');
-  await until(cdp, (current) => (current.lanes['dropped'] ?? []).length > 0, 'the board to render');
+  await until(
+    cdp,
+    (current) =>
+      current.stageable &&
+      current.boardRev !== null &&
+      current.renderedRev === current.boardRev &&
+      (current.lanes['dropped'] ?? []).length > 0,
+    'the mounted board to render'
+  );
 }
 
 async function run(): Promise<Observation[]> {
@@ -661,7 +831,9 @@ async function run(): Promise<Observation[]> {
 
     // O1 — a real drag to a legal lane moves the card and sends exactly one move.
     await fresh(cdp);
-    await dragCardToLane(cdp, '[data-card="T-003"]', '[data-lane="review"]');
+    await dragCardToLane(cdp, '[data-card="T-003"]', '[data-lane="review"]', (current) =>
+      (current.lanes['review'] ?? []).includes('T-003')
+    );
     await until(cdp, (current) => (current.lanes['review'] ?? []).includes('T-003'), 'T-003 to land in review');
     const o1 = await state(cdp);
     observations.push({
@@ -677,9 +849,14 @@ async function run(): Promise<Observation[]> {
 
     // O2 — a real drag onto Dropped sends nothing, keeps the card, and stages the drawer.
     await fresh(cdp);
-    const droppedDrag = await dragCardToLane(cdp, '[data-card="T-002"]', '[data-lane="dropped"]');
-    const o2 = await until(cdp, (current) => current.drawer === 'T-002', 'the staged drawer to open');
-    const o2m = await state(cdp);
+    const droppedDrag = await dragCardToLane(cdp, '[data-card="T-002"]', '[data-lane="dropped"]', (current) =>
+      staged(current, 'T-002', true)
+    );
+    // The observation is the **committed** drawer, not the drawer element: `data-staged` and the
+    // focused reason field arrive one commit after the drawer does, because the group holding the
+    // field is revealed by an effect. Waiting on the drawer alone read the state in between and
+    // reported a panel that had staged correctly as one that had not.
+    const o2m = await until(cdp, (current) => staged(current, 'T-002', true), 'the staged drawer to commit');
     observations.push({
       name: 'a real drag onto Dropped sends no move, never paints the lane, and stages the reason',
       ok:
@@ -691,17 +868,19 @@ async function run(): Promise<Observation[]> {
         o2m.reasonPresent &&
         o2m.reasonFocused &&
         droppedDrag.painted !== 'dropped',
-      detail: `mutations=${String(o2m.mutations)} drawer=${String(o2m.drawer)} staged=${String(o2m.staged)} reasonPresent=${String(o2m.reasonPresent)} reasonFocused=${String(o2m.reasonFocused)} paintedWhileOver=${JSON.stringify(droppedDrag.painted)} ready=${JSON.stringify(o2m.lanes['ready'] ?? [])} dropped=${JSON.stringify(o2m.lanes['dropped'] ?? [])} (waited on drawer: ${String(o2.drawer)})`,
+      detail: `mutations=${String(o2m.mutations)} drawer=${String(o2m.drawer)} staged=${String(o2m.staged)} reasonPresent=${String(o2m.reasonPresent)} reasonFocused=${String(o2m.reasonFocused)} paintedWhileOver=${JSON.stringify(droppedDrag.painted)} ready=${JSON.stringify(o2m.lanes['ready'] ?? [])} dropped=${JSON.stringify(o2m.lanes['dropped'] ?? [])}`,
     });
 
     // O4 — the drawer's own `Move … to Dropped` stages into the drawer that is already open.
     await fresh(cdp);
-    await cdp.evaluate(`document.querySelector('[data-card="T-005"]').dispatchEvent(new MouseEvent('click', { bubbles: true })); undefined`);
+    await click(cdp, '[data-card="T-005"]');
     await until(cdp, (current) => current.drawer === 'T-005', 'the drawer to open');
-    await cdp.evaluate(`document.querySelector('[data-action="more"]').dispatchEvent(new MouseEvent('click', { bubbles: true })); undefined`);
+    // The disclosure is asserted, not assumed: a click that misses leaves the button absent, and the
+    // failure should name that step rather than the wait that follows it.
+    await click(cdp, '[data-action="more"]');
     await until(cdp, (current) => current.moreOpen, 'More moves to open');
-    await cdp.evaluate(`document.querySelector('[aria-label="Move T-005 to Dropped"]').dispatchEvent(new MouseEvent('click', { bubbles: true })); undefined`);
-    const o4 = await until(cdp, (current) => current.staged === 'dropped', 'the drop to stage');
+    await click(cdp, '[aria-label="Move T-005 to Dropped"]');
+    const o4 = await until(cdp, (current) => staged(current, 'T-005'), 'the drop to stage and the field to commit');
     observations.push({
       name: 'the drawer move button to Dropped stages instead of sending a reasonless move',
       ok: o4.staged === 'dropped' && o4.reasonPresent && o4.mutations === 0 && o4.mutateBodies.length === 0,
@@ -710,19 +889,38 @@ async function run(): Promise<Observation[]> {
 
     // O5 — the keyboard path into Dropped stages as well, driven through the protocol.
     await fresh(cdp);
-    await cdp.evaluate(`document.querySelector('[data-card="T-005"]').focus(); undefined`);
     // `rawKeyDown` with the Alt modifier is what the browser sends for `Alt+→`; the panel reads
-    // `event.altKey` and the arrow key on `keydown`, so this is the real shortcut, not a synthetic
-    // DOM event.
-    await cdp.send('Input.dispatchKeyEvent', {
-      type: 'rawKeyDown',
-      key: 'ArrowRight',
-      code: 'ArrowRight',
-      windowsVirtualKeyCode: 39,
-      nativeVirtualKeyCode: 39,
-      modifiers: 1,
-    });
-    const o5 = await until(cdp, (current) => current.drawer === 'T-005', 'the keyboard move to stage');
+    // `event.altKey` and the arrow key on `keydown`, so this is the real shortcut, not a synthetic DOM
+    // event. It is retried because the key goes to whichever card holds focus: a commit that replaced
+    // the card between the focus and the dispatch leaves the keystroke addressing a node that is no
+    // longer in the document, and the panel never hears it — a silent no-op that looks like a refusal.
+    let o5: ProbeState | null = null;
+    for (let attempt = 0; attempt < DRAG_ATTEMPTS && o5 === null; attempt += 1) {
+      const focused = await cdp.evaluate<boolean>(`(function () {
+        var card = document.querySelector('[data-card="T-005"]');
+        if (card === null) return false;
+        card.focus();
+        return document.activeElement === card;
+      })()`);
+      if (!focused) {
+        await new Promise((resolve) => setTimeout(resolve, 120));
+        continue;
+      }
+      await cdp.send('Input.dispatchKeyEvent', {
+        type: 'rawKeyDown',
+        key: 'ArrowRight',
+        code: 'ArrowRight',
+        windowsVirtualKeyCode: 39,
+        nativeVirtualKeyCode: 39,
+        modifiers: 1,
+      });
+      try {
+        o5 = await until(cdp, (current) => staged(current, 'T-005'), 'the keyboard move to stage', DRAG_ATTEMPT_TIMEOUT_MS);
+      } catch {
+        o5 = null;
+      }
+    }
+    if (o5 === null) throw new Error(`the keyboard move to Dropped never staged in ${String(DRAG_ATTEMPTS)} attempts`);
     observations.push({
       name: 'Alt+ArrowRight into Dropped stages instead of sending a reasonless move',
       ok: o5.drawer === 'T-005' && o5.staged === 'dropped' && o5.mutations === 0,

@@ -745,6 +745,65 @@ test('D7: the keyboard path into Dropped stages the same drawer rather than send
   view.unmount();
 });
 
+// ------------------------------------------------------------------ D8 the stage outlives a poll
+
+test('D8: a staged drop survives the poll, and the stage is committed by the same store write', async () => {
+  // The contract the browser probe's fix rests on, pinned where it can be pinned deterministically.
+  //
+  // The probe's 3/6 flake (2026-10-16) came down to one question: does the *product* lose the staged
+  // drop, or was the probe reading the wrong moment? The store is where that is decided, and jsdom can
+  // decide it without a browser. `stageDrop` is not a write, so no poll can roll it back; and the two
+  // facts it publishes are recorded together, synchronously, while the *drawer* that shows them is a
+  // later React commit — the Drop group inside it is revealed by an effect after that.
+  //
+  // So anything treating "the store recorded a stage" as "the drawer is on screen" reports a correct
+  // panel as a broken one, which is exactly what the flaky run did. This case fails on any code that
+  // lets the poll clear the stage, and it guards the fix's only real risk: a refresh landing between
+  // the gesture and the confirmation.
+  const transport = {
+    origin: {
+      origin: 'http://localhost',
+      source: 'test',
+      detail: '',
+      document: { protocol: 'http:', origin: 'http://localhost', baseURI: 'http://localhost/' },
+    },
+    // An external change lands on the poll: a revision the panel has not seen, carried on a whole new
+    // board object. That is the strongest form of "a poll arrived" the store can receive.
+    board: async () => ({ changed: true, payload: boardPayload({ rev: 8 }) as never }),
+    task: async () => ({ task: null, comments: [], events: [] }) as never,
+    mutate: async () => ({ rev: 9, result: {} }) as never,
+    health: async () => ({}),
+  };
+  const store = createBoardStore(transport as never, { pollMs: 600_000 });
+
+  const staging = store.stageDrop('T-002', 'pointer', 0);
+  // Both facts are in the snapshot before anything is awaited, and that is the point: the stage is not
+  // downstream of the drawer's read. Reading the DOM right here, though, finds no drawer at all,
+  // because React has not committed yet.
+  assert.equal(store.getSnapshot().stagedDrop?.taskId, 'T-002', 'the stage is recorded synchronously');
+  assert.equal(store.getSnapshot().selectedId, 'T-002', 'and the drawer is selected in the same store write');
+  assert.equal(store.getSnapshot().detail, null, 'while the drawer’s own read is still in flight');
+  await staging;
+  await flush();
+  assert.equal(store.getSnapshot().stagedDrop?.taskId, 'T-002', 'the stage is still there when the read answers');
+
+  const staged = store.getSnapshot().stagedDrop;
+  await store.refresh(true);
+  assert.equal(
+    store.getSnapshot().stagedDrop,
+    staged,
+    'a poll that replaces the whole board does not touch the staged drop'
+  );
+  assert.equal(store.getSnapshot().selectedId, 'T-002', 'and the drawer the stage belongs to stays open');
+
+  // By identity, not by value: the reference is what the drawer reads through `useSyncExternalStore`,
+  // so an equal-but-new object would re-render for nothing and a `null` would close the drawer and
+  // lose the reason the human was in the middle of writing.
+  assert.equal(store.getSnapshot().payload?.rev, 8, 'the polled board really was applied');
+  store.select(null);
+  assert.equal(store.getSnapshot().stagedDrop, null, 'closing the drawer is the one thing that clears the stage');
+});
+
 test('the drawn columns are every state in board order, whatever the filter names', () => {
   // The rule at the level where it is decided, now that no filter can change the lane list: the
   // filter narrows cards, never lanes. This is what keeps "view all" literal.
