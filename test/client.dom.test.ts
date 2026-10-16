@@ -13,6 +13,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import {
   boardPayload,
@@ -325,4 +326,40 @@ test('a partly-read board says so on screen', async () => {
   const view = await mountBoard(loadBundle(), { ...payload, truncated: { shown: 5, total: 900 } });
   assert.match(view.text(), /showing 5 of 900 cards/);
   view.unmount();
+});
+
+test('every CSS variable the panel uses is a theme token the app actually provides', () => {
+  // The panel referenced ten invented `--dsh-color-*` names that resolve to nothing in this app.
+  // Every one had a hard-coded grey fallback, so nothing looked broken enough to notice — the panel
+  // was simply off-theme in both light and dark, and the variables were dead letters. No test could
+  // see it and no browser was needed to find it: only this diff.
+  //
+  // Source of truth: `cordis_inspect_query platform=client provider=Theme method=listTokens` against
+  // the running app, 2026-10-16 — fourteen tokens, all `--dsw-*`. Re-run that and update this list
+  // when the app's theme changes.
+  const THEME_TOKENS = new Set([
+    '--dsw-alias-bg-base',
+    '--dsw-alias-bg-layer-1',
+    '--dsw-alias-bg-layer-2',
+    '--dsw-alias-bg-overlay',
+    '--dsw-alias-border-l1',
+    '--dsw-alias-border-l2',
+    '--dsw-alias-brand-primary',
+    '--dsw-alias-label-primary',
+    '--dsw-alias-label-secondary',
+    '--dsw-alias-state-error-primary',
+    '--dsw-alias-state-idle-primary',
+    '--dsw-alias-state-success-primary',
+    '--dsw-alias-state-warn-primary',
+    '--dsw-specific-sidebar-fill',
+  ]);
+
+  const bundle = readFileSync(new URL('../lib/v1/client.js', import.meta.url), 'utf8');
+  const referenced = [...new Set([...bundle.matchAll(/var\((--[a-z0-9-]+)/g)].map((match) => match[1] as string))];
+  assert.ok(referenced.length > 0, 'the bundle should style itself with the theme, not with literals only');
+
+  // A variable the stylesheet defines itself is legitimate; an unknown `--dsh-*`/`--dsw-*` is not.
+  const defined = new Set([...bundle.matchAll(/(--kb-[a-z0-9-]+)\s*:/g)].map((match) => match[1] as string));
+  const unknown = referenced.filter((name) => !THEME_TOKENS.has(name) && !defined.has(name));
+  assert.deepEqual(unknown, [], 'these variables do not exist in the app theme and would fall back to literals');
 });

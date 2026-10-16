@@ -56,7 +56,15 @@ export function defaultMirrorPath(): string {
  * `:memory:` is supported for tests and skips both the directory creation and the WAL pragma
  * (WAL is a property of a file, and an in-memory database reports `memory`).
  */
-export function openBoard(path: string): Board {
+/**
+ * Open the board at `path`, or at the default location when none is given.
+ *
+ * The default matters: `defaultBoardPath()` has always existed and every in-repo caller passes it
+ * explicitly, so a bare `openBoard()` used to fail with `ERR_INVALID_ARG_TYPE: The "path" argument
+ * must be of type string. Received undefined` — an error that names the symptom and hides the
+ * intent. An ad-hoc probe or a maintenance script should simply get the board.
+ */
+export function openBoard(path: string = defaultBoardPath()): Board {
   const inMemory = path === ':memory:';
   if (!inMemory) mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
 

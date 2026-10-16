@@ -7,6 +7,9 @@
  * skips the directory and the WAL pragma — so nothing here is a simulation of the real thing.
  */
 import { test } from 'node:test';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import assert from 'node:assert/strict';
 import {
   ConflictError,
@@ -41,6 +44,7 @@ import {
   listViews,
   moveObservations,
   moveTask,
+  openBoard,
   purgeTask,
   readBoardTitle,
   readDow,
@@ -805,4 +809,23 @@ test('a limited read reports the whole count, so a partial view can be announced
   assert.equal(page.tasks.length, 2);
   assert.equal(page.total, 3, 'the total is the store\'s, not the page\'s');
   board.close();
+});
+
+test('openBoard() with no argument opens the default location', () => {
+  // A required `path` made `openBoard()` throw `ERR_INVALID_ARG_TYPE` in a plain-JS probe — the
+  // error names the symptom and hides the intent. The default is derived per call, not at load, so
+  // a changed `DSH_HOME` is honoured (the bug that once froze it to the first home it ever saw).
+  const previous = process.env.DSH_HOME;
+  const home = mkdtempSync(join(tmpdir(), 'kanban-default-'));
+  try {
+    process.env.DSH_HOME = home;
+    const board = openBoard();
+    assert.equal(board.path, join(home, 'tasks', 'board.db'));
+    assert.equal(existsSync(join(home, 'tasks', 'board.db')), true, 'and it was created there');
+    board.close();
+  } finally {
+    if (previous === undefined) delete process.env.DSH_HOME;
+    else process.env.DSH_HOME = previous;
+    rmSync(home, { recursive: true, force: true });
+  }
 });
