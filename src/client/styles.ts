@@ -8,6 +8,10 @@
  * Every colour comes from a theme token with a literal fallback, so the board follows the app's
  * light/dark theme instead of fighting it, and nothing here hardcodes a background. The `kb-` prefix
  * keeps it from colliding with the app's own rules.
+ *
+ * No backticks below: this is one template literal, so a code span in a comment ends the string and
+ * the build fails. That happened once, and the suite went green against a stale bundle for a while.
+ * A test counts the delimiters. Stylesheet text uses 'quotes' for emphasis.
  */
 export const STYLES = `
 /* Three role literals, each declared once, because the same fallback had drifted into four alphas for
@@ -32,7 +36,7 @@ export const STYLES = `
    answers that by writing scrollbar-color as "thumb, transparent", and its own -webkit track rule is
    "background: 0 0". The panel now writes both halves the same way, so the thumb is measured against
    the surface it actually sits on (the lane or the drawer) instead of against a same-valued fill:
-   1.26:1 in light (the ladder's `-hover` step is 1.17:1), and 1.43:1 in dark. The thumb's own
+   1.26:1 in light (the ladder's -hover step is 1.17:1), and 1.43:1 in dark. The thumb's own
    fallback is --kb-label-secondary, this sheet's "visible de-emphasised mark", so a missing ladder
    still produces a visible thumb (5.80:1 light) rather than a track-coloured one. */
 .kb-lanes, .kb-drawer { scrollbar-width: thin;
@@ -124,11 +128,15 @@ export const STYLES = `
 /* The drop target cannot rely on the brand token: in dark it resolves to a near-white neutral, so
    the ring vanished into the body. A raised tint plus a dashed secondary-label ring reads in both. */
 .kb-lane-over { background: var(--dsw-alias-bg-layer-2, var(--kb-bg-layer-2)); outline: 2px dashed var(--dsw-alias-label-secondary, currentColor); outline-offset: -3px; }
-/* An empty lane is a rail, not a 236px void -- it still takes a drop, and it opens while a drag is
-   live so the target is hittable exactly when it matters. */
-.kb-lane-empty { flex: 0 0 46px; padding: 9px 5px; align-items: center; }
-.kb-lane-empty .kb-lane-head { flex-direction: column; gap: 3px; }
-.kb-lane-empty .kb-lane-name { writing-mode: vertical-rl; }
+/* An empty lane is a narrow slot, not a 236px void -- it still takes a drop, and it opens while a drag
+   is live so the target is hittable exactly when it matters. It keeps its name on **one horizontal
+   line**: a rotated word reads as a sliver rather than a column, and at 46px no name fits across at all,
+   so the collapse narrows the lane instead of turning the label on its side.
+   The dashed edge is the panel's existing "not settled" vocabulary (.kb-skeleton, .kb-lane-over), and
+   nothing depends on a fill: in light, bg-layer-1, bg-layer-2 and bg-base all resolve to the same
+   colour, so a tint would be a no-op in one theme while carrying the whole meaning in the other. */
+.kb-lane-empty { flex: 0 0 auto; padding: 9px; align-items: stretch; border-style: dashed; }
+.kb-lane-empty .kb-lane-head { flex-direction: row; }
 .kb-lane-empty .kb-cards { width: 100%; min-height: 48px; }
 .kb-lane-empty .kb-empty { display: none; }
 .kb-lane-awake { flex: 0 0 var(--kb-lane-width, 236px); padding: 9px; align-items: stretch; }

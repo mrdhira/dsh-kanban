@@ -1968,8 +1968,11 @@ test('the pass-2 stylesheet rules are authored, and the states they style are re
   // B8: the drop target reads in dark without the monochrome brand token.
   assert.match(styles, /\.kb-lane-over \{[^}]*background: var\(--dsw-alias-bg-layer-2/);
   assert.match(styles, /\.kb-lane-over \{[^}]*outline: 2px dashed var\(--dsw-alias-label-secondary/);
-  // C8: the rail and the state that opens it.
-  assert.match(styles, /\.kb-lane-empty \{[^}]*flex: 0 0 46px/);
+  // C8: the parked lane and the state that opens it. It used to be a 46px rail with its name rotated;
+  // it is now a content-width outlined slot whose name stays horizontal -- see the dedicated test for
+  // why, and for the pattern-level guard that keeps any label off its side.
+  assert.match(styles, /\.kb-lane-empty \{[^}]*flex: 0 0 auto/);
+  assert.match(styles, /\.kb-lane-empty \{[^}]*border-style: dashed/);
   assert.match(styles, /\.kb-lane-awake \{[^}]*flex: 0 0 var\(--kb-lane-width/);
 
   // The behavioural half: the panel really reaches the classes those rules name. `.kb-lane-empty`
@@ -2259,4 +2262,42 @@ test('F21: the drawer’s two bare ellipses now name what they do', async () => 
   assert.equal(view.find('[data-action="exception"]')?.textContent, 'Exception to a gate…');
   assert.equal(view.find('[data-action="exception"]')?.getAttribute('aria-expanded'), 'false');
   view.unmount();
+});
+
+test('no label is turned on its side, and a parked lane is an outlined slot on one line', async () => {
+  const styles = readFileSync(new URL('../src/client/styles.ts', import.meta.url), 'utf8');
+  // The parked lane's name used to be rotated 90 degrees. A sideways word reads as a sliver rather than
+  // a column, and the name is the one thing the parked lane still communicated. Forbid the pattern
+  // rather than the instance: no rule may turn text vertical, whatever selector does it.
+  assert.equal(/writing-mode:\s*vertical/.test(styles), false, 'no rule may set a vertical writing mode');
+  assert.match(styles, /\.kb-lane-empty \{[^}]*border-style: dashed/, 'the parked lane is outlined as a slot');
+  assert.equal(
+    /\.kb-lane-empty \.kb-lane-head \{ flex-direction: column/.test(styles),
+    false,
+    'its name and count are not stacked',
+  );
+
+  // And it is still a lane: it renders, and it still names itself.
+  const view = await mountBoard(loadBundle());
+  const parked = view.find('.kb-lane-empty');
+  assert.ok(parked !== null, 'a card-less lane renders as the parked lane');
+  assert.match(view.text(), /Review/, 'the parked lane still names its state');
+  view.unmount();
+});
+
+test('the stylesheet string is one unbroken template literal', () => {
+  // `STYLES` is a template literal, so a backtick inside the CSS -- in a comment, most likely -- ends the
+  // string and the build fails. On 2026-10-16 exactly that happened: a comment gained a code span, the
+  // client build broke, and every "green" suite after it was running against a STALE bundle. Counting
+  // delimiters is crude and would have caught it in milliseconds.
+  const source = readFileSync(new URL('../src/client/styles.ts', import.meta.url), 'utf8');
+  const marker = 'export const STYLES = `';
+  const start = source.indexOf(marker);
+  assert.ok(start >= 0, 'the stylesheet is declared as one template literal');
+  const body = source.slice(start + marker.length);
+  assert.equal(
+    (body.match(/`/g) ?? []).length,
+    1,
+    'exactly one backtick after the opening delimiter: the one that closes it',
+  );
 });
