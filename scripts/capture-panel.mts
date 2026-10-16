@@ -31,7 +31,7 @@
  * Run (through the guard, as every node run must be):
  *   node ~/.dsh/scripts/guard/guard.mjs --limit-mb 2560 -- \
  *     node --max-old-space-size=384 \
- *     ~/.dsh/profiles/desktop/dsh-kanban/scripts/capture-panel.mts
+ *     ~/.dsh/profiles/desktop/plugins/dsh-kanban/scripts/capture-panel.mts
  *
  * The cap is 2560 MB, not 1024 MB, for a measured reason rather than a convenience one: this script's
  * own Node half peaks at ~130 MB RSS, but the headless Chrome it spawns needs ~1.35 GB of process tree

@@ -35,7 +35,7 @@ the full rationale.
 ## Install
 
 ```bash
-cd ~/.dsh/profiles/desktop/dsh-kanban
+cd ~/.dsh/profiles/desktop/plugins/dsh-kanban
 ./install.sh            # registers the bundle in the profile and links it
 ./install.sh --check    # what would change
 ./install.sh --remove   # unregister
