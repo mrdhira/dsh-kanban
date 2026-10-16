@@ -743,3 +743,56 @@ test('the origin allowlist is loopback-only and rejects everything else', () => 
     assert.equal(isAllowedOrigin(refused), false, String(refused));
   }
 });
+
+test('the desktop shell scheme is allowed, because that is where the panel actually runs', async () => {
+  // The panel's document reports `dsh-app://app` — a custom Electron scheme, not http. So every
+  // request it makes to this loopback route is cross-origin, and `Failed to fetch` was this allowlist
+  // refusing the origin while `curl`, which sends no Origin, was served happily.
+  assert.equal(isAllowedOrigin('dsh-app://app'), true);
+  assert.equal(isAllowedOrigin('dsh-app://'), true, 'the scheme is the app itself whatever its host');
+
+  const box = sandbox();
+  try {
+    const host = fakeHost(INJECTED, {});
+    await boot(host, box.home);
+    const route = host.routes[0] as DshWebRoute;
+
+    const preflight = await callRoute(route, 'OPTIONS', `${API_PREFIX}/board`, undefined, {
+      origin: 'dsh-app://app',
+      'access-control-request-method': 'GET',
+      'access-control-request-headers': 'x-kanban-actor',
+    });
+    assert.equal(preflight.status, 204);
+    assert.equal(preflight.headers['access-control-allow-origin'], 'dsh-app://app');
+
+    const read = await callRoute(route, 'GET', `${API_PREFIX}/board`, undefined, { origin: 'dsh-app://app' });
+    assert.equal(read.status, 200);
+    assert.equal(read.headers['access-control-allow-origin'], 'dsh-app://app');
+  } finally {
+    box.restore();
+  }
+});
+
+test('health reports the origins it has seen, so a blocked request is diagnosable from curl', async () => {
+  const box = sandbox();
+  try {
+    const host = fakeHost(INJECTED, {});
+    await boot(host, box.home);
+    const route = host.routes[0] as DshWebRoute;
+
+    await callRoute(route, 'GET', `${API_PREFIX}/board`, undefined, { origin: 'dsh-app://app' });
+    await callRoute(route, 'GET', `${API_PREFIX}/board`, undefined, { origin: 'https://evil.example' });
+
+    const health = JSON.parse((await callRoute(route, 'GET', `${API_PREFIX}/health`)).body) as {
+      recentOrigins: readonly { origin: string; allowed: boolean; method: string; path: string }[];
+    };
+    const app = health.recentOrigins.find((entry) => entry.origin === 'dsh-app://app');
+    const evil = health.recentOrigins.find((entry) => entry.origin === 'https://evil.example');
+    assert.equal(app?.allowed, true);
+    assert.equal(evil?.allowed, false);
+    assert.equal(evil?.path, `${API_PREFIX}/board`);
+    assert.equal(health.recentOrigins.length <= 8, true, 'bounded, so it cannot grow without limit');
+  } finally {
+    box.restore();
+  }
+});

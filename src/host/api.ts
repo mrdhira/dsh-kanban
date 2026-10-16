@@ -72,21 +72,27 @@ export interface ApiDeps {
 }
 
 /**
- * Which origins may call this route from a browser.
+ * The desktop shell's own scheme, which is where the panel actually runs.
  *
- * The route deliberately sits **outside** the app's own auth fence (a plugin prefix route is not
- * wrapped by it — verified with `curl`, which reaches `/api/kanban/health` with no token). That is
- * the accepted loopback trust model, but it makes CORS the *only* thing between this board and any
- * web page Dhira happens to have open: an unauthenticated `POST /api/kanban/mutate` would be a real
- * cross-site write. So the allowlist is not `*` — it is **loopback hosts only**, which covers the
- * app's own GUI whatever it is called (`127.0.0.1`, `localhost`, `[::1]`) and excludes every public
- * site. DNS rebinding does not help an attacker: it changes what the *server* resolves to, while the
- * page's `Origin` stays `http://evil.example`, which this refuses.
+ * The panel's document is **not** served over http: it reports `dsh-app://app`, a custom Electron
+ * scheme the app registers. So every request the panel makes to this loopback http route is
+ * cross-origin, carries `Origin: dsh-app://app`, and was refused by the allowlist below — which is
+ * why the board showed `Failed to fetch` while `curl` returned 200.
+ *
+ * Granting it is **narrow, not a wildcard**: no web page can present a `dsh-app:` origin, and the
+ * app's own rendered-HTML surface cannot fetch at all (its sanitizer prepends
+ * `connect-src 'none'`). An http loopback origin is a different matter — any page on it can reach
+ * this route — which is why `null` is still refused: it is what a sandboxed iframe or a `file://`
+ * page presents, and either would be a stranger.
  */
+const APP_SCHEMES: readonly string[] = ['dsh-app:'];
+
+/** Which origins may call this route from a browser. */
 export function isAllowedOrigin(origin: string | undefined): boolean {
   if (origin === undefined || origin.length === 0) return false;
   try {
     const url = new URL(origin);
+    if (APP_SCHEMES.includes(url.protocol)) return true;
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
     const host = url.hostname.replace(/^\[|\]$/g, '');
     return host === '127.0.0.1' || host === 'localhost' || host === '::1';
@@ -95,7 +101,35 @@ export function isAllowedOrigin(origin: string | undefined): boolean {
   }
 }
 
-/** The CORS headers for one request, or none when the origin is not the local GUI. */
+export interface SeenOrigin {
+  readonly origin: string;
+  readonly allowed: boolean;
+  readonly method: string;
+  readonly path: string;
+  readonly at: string;
+}
+
+/**
+ * The last few request origins, kept in memory and surfaced by `GET /health`.
+ *
+ * The cost of not having this was a screenshot round trip: `Failed to fetch` says nothing about
+ * *which* origin the browser presented, so the only way to learn it was to ask Dhira to read the
+ * panel. Now `curl /api/kanban/health` answers the question the browser's error message cannot.
+ */
+const SEEN_LIMIT = 8;
+const seen: SeenOrigin[] = [];
+
+function recordOrigin(origin: string | undefined, allowed: boolean, method: string, path: string): void {
+  seen.push({ origin: origin ?? '(none)', allowed, method, path, at: new Date().toISOString() });
+  if (seen.length > SEEN_LIMIT) seen.splice(0, seen.length - SEEN_LIMIT);
+}
+
+/** The recent origins, newest last. */
+export function seenOrigins(): readonly SeenOrigin[] {
+  return [...seen];
+}
+
+/** The CORS headers for one request, or none when the origin is not the app's own. */
 export function corsHeaders(origin: string | undefined): Record<string, string> {
   if (!isAllowedOrigin(origin)) return {};
   return {
@@ -103,6 +137,14 @@ export function corsHeaders(origin: string | undefined): Record<string, string> 
     'access-control-allow-methods': 'GET, POST, OPTIONS',
     'access-control-allow-headers': 'content-type, x-kanban-actor',
     'access-control-max-age': '600',
+    /**
+     * Chromium's Private Network Access: a request to a **loopback** address from any other origin
+     * carries `Access-Control-Request-Private-Network: true` and is refused unless the preflight
+     * answers with this header. The panel's document is `dsh-app://app`, so every one of its requests
+     * is exactly that shape — another wall in the same corridor as the missing preflight, cheaper to
+     * place now than to discover from a screenshot.
+     */
+    'access-control-allow-private-network': 'true',
     // The answer depends on the request's Origin, so it must not be cached as though it did not.
     vary: 'Origin',
   };
@@ -470,8 +512,10 @@ export function createApiHandler(deps: ApiDeps): DshWebRoute['handler'] {
      * `curl` to the very same URL returned 200. A working server and an unreachable one, decided by
      * whether a browser was asking.
      */
-    const cors = corsHeaders(header(req, 'origin'));
+    const origin = header(req, 'origin');
+    const cors = corsHeaders(origin);
     (res as { __kanbanCors?: Record<string, string> }).__kanbanCors = cors;
+    recordOrigin(origin, isAllowedOrigin(origin), method, path);
     if (method === 'OPTIONS') {
       // 204 either way; without `access-control-allow-origin` a foreign page's preflight still fails,
       // which is the point of the allowlist rather than a wildcard.
@@ -498,6 +542,9 @@ export function createApiHandler(deps: ApiDeps): DshWebRoute['handler'] {
           api: API_PREFIX,
           method,
           board: { path: deps.config().dbPath, rev: boardRevision(board), tasks: countsByState(board) },
+          // What the browser actually presented, so a blocked request can be diagnosed from curl
+          // instead of from a screenshot of the panel.
+          recentOrigins: seenOrigins(),
         });
         return;
       }
