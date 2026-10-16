@@ -161,7 +161,6 @@ function CardView(props: CardProps): ReactElement {
   const classes = ['kb-card'];
   if (task.classOfService === 'expedite') classes.push('kb-card-expedite');
   if (task.blockedReason !== null) classes.push('kb-card-blocked');
-  if (task.state === 'done') classes.push('kb-card-done');
   // The top row holds the id, the priority code and the age inside a 236px lane, so it keeps the
   // numbers and the words move down to the chip row, which wraps without breaking a token. The words
   // are what keep the meaning alive without colour (amber cannot carry small text on white: 2.15:1

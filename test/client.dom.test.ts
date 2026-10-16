@@ -839,7 +839,8 @@ test('C4: the Alt+arrow path is surfaced on the drawer and the lanes', async () 
 
 test('C5: done carries a drawn success mark, an unfinished card does not', async () => {
   const view = await mountBoard(loadBundle());
-  assert.equal(view.find('[data-card="T-005"]')?.className.includes('kb-card-done'), true, 'the done card is marked');
+  // Assert the drawn mark, not a class name: the class had no CSS rule anywhere (DESIGN.md recorded it
+  // as an open question), so asserting it was a test that could not fail. The visible mark is the SVG.
   const mark = view.find('[data-card="T-005"] .kb-mark');
   assert.equal(mark?.tagName.toLowerCase(), 'svg');
   assert.equal(mark?.getAttribute('aria-hidden'), 'true', 'decorative: the lane header already says Done');

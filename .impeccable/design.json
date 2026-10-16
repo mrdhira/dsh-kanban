@@ -1,0 +1,290 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-16T19:27:47+09:00",
+  "title": "Design System: dsh-kanban Board",
+  "extensions": {
+    "colorMeta": {
+      "brand-primary": {
+        "role": "primary",
+        "displayName": "Interactive Accent (resolves to the app foreground)",
+        "canonical": "#0f1115",
+        "tonalRamp": ["#0f1115", "#232324", "#353638", "#61666b", "#979da6", "#cfd3d6", "#f1f3f5", "#ffffff"]
+      },
+      "state-error": {
+        "role": "secondary",
+        "displayName": "Refusal Red",
+        "canonical": "#ec1313",
+        "tonalRamp": ["#570c0c", "#ec1313", "#ef4444", "#f25a5a", "#fee2e2", "#fef2f2"]
+      },
+      "state-warn": {
+        "role": "tertiary",
+        "displayName": "Attention Amber (dark-theme text only)",
+        "canonical": "#f59e0b",
+        "tonalRamp": ["#27241f", "#dd8629", "#f59e0b", "#f7ad31", "#fef5e7"]
+      },
+      "state-success": {
+        "role": "tertiary",
+        "displayName": "Completion Green",
+        "canonical": "#22c55e",
+        "tonalRamp": ["#233c2c", "#22c55e", "#4ed17e", "#e6faed"]
+      },
+      "label-primary": {
+        "role": "neutral",
+        "displayName": "Foreground",
+        "canonical": "#0f1115",
+        "tonalRamp": ["#0f1115", "#232324", "#353638", "#61666b", "#979da6", "#cfd3d6", "#f1f3f5", "#ffffff"]
+      },
+      "label-secondary": {
+        "role": "neutral",
+        "displayName": "De-emphasis",
+        "canonical": "#61666b",
+        "tonalRamp": ["#0f1115", "#232324", "#353638", "#61666b", "#979da6", "#cfd3d6", "#f1f3f5", "#ffffff"]
+      },
+      "label-tertiary": {
+        "role": "neutral",
+        "displayName": "Dimmest Tier (dark-theme only)",
+        "canonical": "#81858c",
+        "tonalRamp": ["#0f1115", "#232324", "#353638", "#61666b", "#81858c", "#cfd3d6", "#f1f3f5", "#ffffff"]
+      },
+      "border-l1": {
+        "role": "neutral",
+        "displayName": "Hairline L1",
+        "canonical": "#0000000a",
+        "tonalRamp": ["#0000000a", "#0000001a", "#0000001f", "#00000029"]
+      },
+      "border-l2": {
+        "role": "neutral",
+        "displayName": "Hairline L2 (state)",
+        "canonical": "#0000001a",
+        "tonalRamp": ["#0000000a", "#0000001a", "#0000001f", "#00000029"]
+      },
+      "bg-base": {
+        "role": "neutral",
+        "displayName": "Card Surface",
+        "canonical": "#ffffff",
+        "tonalRamp": ["#0f1115", "#232324", "#353638", "#61666b", "#979da6", "#cfd3d6", "#f1f3f5", "#ffffff"]
+      },
+      "bg-layer-1": {
+        "role": "neutral",
+        "displayName": "Lane Surface",
+        "canonical": "#ffffff",
+        "tonalRamp": ["#0f1115", "#232324", "#353638", "#61666b", "#979da6", "#cfd3d6", "#f1f3f5", "#ffffff"]
+      },
+      "bg-layer-2": {
+        "role": "neutral",
+        "displayName": "Raised Tint",
+        "canonical": "#ffffff",
+        "tonalRamp": ["#0f1115", "#232324", "#353638", "#61666b", "#979da6", "#cfd3d6", "#f1f3f5", "#ffffff"]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Board Heading",
+        "purpose": "The one heading in the panel: the board title at 18px/600, line-height 1.25, margin 0."
+      },
+      "body": {
+        "displayName": "Inherited Body",
+        "purpose": "Everything else at 13px/1.5 in the host app's own face. The panel declares no font-family for prose; drawer list rows step down to 12px."
+      },
+      "label": {
+        "displayName": "Monospace Data",
+        "purpose": "Card ids, lane counts, priority codes, flow metrics, sprint chips, history rows and the missing: list at 12px. Monospace marks identity and measurement, never technical flavour."
+      }
+    },
+    "shadows": [],
+    "motion": [
+      {
+        "name": "duration-state",
+        "value": "140ms",
+        "purpose": "The only duration in the stylesheet. Buttons transition background-color, border-color and transform; inputs transition background-color and border-color."
+      },
+      {
+        "name": "ease-state",
+        "value": "ease-out",
+        "purpose": "The only easing. Every transition answers a state change; nothing animates into existence."
+      },
+      {
+        "name": "press-nudge",
+        "value": "translateY(1px)",
+        "purpose": "A button's :active acknowledgement, cancelled under prefers-reduced-motion along with the transitions."
+      },
+      {
+        "name": "reduced-motion",
+        "value": "@media (prefers-reduced-motion: reduce)",
+        "purpose": "Sets transition: none on .kb-btn and .kb-input and cancels the press nudge, so no transition is load-bearing."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "reduced-motion",
+        "value": "reduce",
+        "purpose": "The stylesheet's only media query. There are no width breakpoints: the panel is a fixed-width sidebar column whose lanes scroll sideways and whose rows wrap. PRODUCT.md records the column at roughly 1000px and the lane at a fixed 236px."
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Button",
+      "kind": "button",
+      "refersTo": "button",
+      "description": "The panel's only button. One quiet outline serves header actions, filters, drawer moves and dismissal; there is no primary/secondary hierarchy.",
+      "html": "<button class='ds-btn' type='button'>Refresh</button>",
+      "css": ".ds-btn { border: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.35)); background: transparent; color: var(--dsw-alias-label-primary, inherit); border-radius: 7px; padding: 3px 9px; font: inherit; line-height: 1.4; cursor: pointer; transition: background-color 140ms ease-out, border-color 140ms ease-out, transform 140ms ease-out; } .ds-btn:hover { background: var(--dsw-alias-bg-layer-2, rgba(128,128,128,0.12)); } .ds-btn:active { transform: translateY(1px); } .ds-btn:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary, #4c8bf5); outline-offset: 2px; } .ds-btn:disabled { opacity: 0.5; cursor: default; } .ds-btn:disabled:hover { background: transparent; } @media (prefers-reduced-motion: reduce) { .ds-btn { transition: none; } .ds-btn:active { transform: none; } }"
+    },
+    {
+      "name": "Button — Pressed",
+      "kind": "button",
+      "refersTo": "button-pressed",
+      "description": "A toggled control (active saved view, state quick chip, ticked checklist row). Pressed is a tint plus weight, deliberately never a colour on its own: brand-primary resolves to the app foreground, so a brand fill would paint body-white in dark.",
+      "html": "<button class='ds-btn' type='button' aria-pressed='true'>Ready</button> <button class='ds-btn' type='button' aria-pressed='false'>Review</button>",
+      "css": ".ds-btn { border: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.35)); background: transparent; color: var(--dsw-alias-label-primary, inherit); border-radius: 7px; padding: 3px 9px; font: inherit; line-height: 1.4; cursor: pointer; transition: background-color 140ms ease-out, border-color 140ms ease-out, transform 140ms ease-out; } .ds-btn:hover { background: var(--dsw-alias-bg-layer-2, rgba(128,128,128,0.12)); } .ds-btn:active { transform: translateY(1px); } .ds-btn:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary, #4c8bf5); outline-offset: 2px; } .ds-btn[aria-pressed='true'] { background: var(--dsw-alias-bg-layer-2, rgba(128,128,128,0.12)); border-color: var(--dsw-alias-border-l2, var(--dsw-alias-border-l1, rgba(128,128,128,0.5))); font-weight: 600; } @media (prefers-reduced-motion: reduce) { .ds-btn { transition: none; } .ds-btn:active { transform: none; } }"
+    },
+    {
+      "name": "Text Field",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Search, comment and the three reason fields. Hover steps the hairline up to border-l2; focus uses the shared brand ring; a placeholder is label-secondary, and in dark the app's tertiary tier is layered over it.",
+      "html": "<input class='ds-input' type='search' placeholder='search cards…' aria-label='Search cards' />",
+      "css": ".ds-input { border: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.35)); background: transparent; color: var(--dsw-alias-label-primary, inherit); border-radius: 7px; padding: 3px 8px; font: inherit; min-width: 140px; transition: background-color 140ms ease-out, border-color 140ms ease-out; } .ds-input::placeholder { color: var(--dsw-alias-label-secondary, rgba(128,128,128,0.9)); } .ds-input:hover { border-color: var(--dsw-alias-border-l2, var(--dsw-alias-border-l1, rgba(128,128,128,0.5))); } .ds-input:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary, #4c8bf5); outline-offset: 2px; } @media (prefers-reduced-motion: reduce) { .ds-input { transition: none; } }"
+    },
+    {
+      "name": "Chip",
+      "kind": "chip",
+      "refersTo": "chip",
+      "description": "A pill that states a fact about a card (class of service, blocked, assignee, project, sprint) or a lane (over limit). Purely informational: never selectable, never a filter, no pressed variant.",
+      "html": "<span class='ds-chip'>blocked</span> <span class='ds-chip'>expedite</span> <span class='ds-chip ds-chip-kb'>S-001</span>",
+      "css": ".ds-chip { border: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.3)); border-radius: 999px; padding: 1px 8px; font-size: 12px; line-height: 1.5; color: var(--dsw-alias-label-primary, inherit); } .ds-chip-kb { background: var(--dsw-alias-bg-layer-2, rgba(128,128,128,0.1)); }"
+    },
+    {
+      "name": "Card",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "The unit of the board. Three rows: a nowrap identity row (optional drawn completion mark, id, priority code, age), a title that takes the rest, and a wrapping meta row of pills. Hover promotes the whole 1px border to the brand token; focus draws the 2px ring at a 1px offset because the card sits inside the scrolled lane.",
+      "html": "<div class='ds-card' tabindex='0' role='button' aria-label='T-005 Fix the drop target, In Progress, P0 critical'>  <div class='ds-card-top'><span class='ds-card-id'>T-005</span><span class='ds-pri ds-pri-p0'>P0</span><span class='ds-age ds-age-ageing'>3.5d</span></div>  <div class='ds-card-title'>Fix the drop target</div>  <div class='ds-card-meta'><span class='ds-chip'>critical</span><span class='ds-chip'>ageing</span><span class='ds-chip'>dhira</span></div></div>",
+      "css": ".ds-card { border: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.32)); border-radius: 8px; padding: 7px 9px; background: var(--dsw-alias-bg-base, transparent); color: var(--dsw-alias-label-primary, inherit); cursor: grab; display: flex; flex-direction: column; gap: 5px; } .ds-card:hover { border-color: var(--dsw-alias-brand-primary, #4c8bf5); } .ds-card:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary, #4c8bf5); outline-offset: 1px; } .ds-card-top { display: flex; gap: 7px; align-items: baseline; flex-wrap: nowrap; } .ds-card-top > * { white-space: nowrap; } .ds-card-id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--dsw-alias-label-secondary, rgba(128,128,128,0.9)); font-size: 12px; } .ds-pri { font-weight: 600; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; } .ds-pri-p0 { color: var(--dsw-alias-state-error-primary, #d64545); } .ds-age-ageing { color: var(--dsw-alias-label-primary, inherit); } .ds-card-title { flex: 1 1 auto; } .ds-card-meta { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font-size: 12px; color: var(--dsw-alias-label-secondary, inherit); } .ds-chip { border: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.3)); border-radius: 999px; padding: 1px 8px; font-size: 12px; line-height: 1.5; color: var(--dsw-alias-label-primary, inherit); }"
+    },
+    {
+      "name": "Card — State Edge",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "An expedite or blocked card recolours its whole 1px border in the state colour. Never a thick one-sided stripe: the class chip and the word already name the state, so the edge is redundant reinforcement.",
+      "html": "<div class='ds-card ds-card-expedite' tabindex='0' role='button' aria-label='T-002 Cut the release, Ready, P1 high'>  <div class='ds-card-top'><span class='ds-card-id'>T-002</span><span class='ds-pri ds-pri-p1'>P1</span><span class='ds-age ds-age-fresh'>1d</span></div>  <div class='ds-card-title'>Cut the release</div>  <div class='ds-card-meta'><span class='ds-chip'>high</span><span class='ds-chip'>expedite</span></div></div>",
+      "css": ".ds-card { border: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.32)); border-radius: 8px; padding: 7px 9px; background: var(--dsw-alias-bg-base, transparent); color: var(--dsw-alias-label-primary, inherit); cursor: grab; display: flex; flex-direction: column; gap: 5px; } .ds-card:hover { border-color: var(--dsw-alias-brand-primary, #4c8bf5); } .ds-card:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary, #4c8bf5); outline-offset: 1px; } .ds-card-expedite { border-color: var(--dsw-alias-state-error-primary, #d64545); } .ds-card-top { display: flex; gap: 7px; align-items: baseline; flex-wrap: nowrap; } .ds-card-top > * { white-space: nowrap; } .ds-card-id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--dsw-alias-label-secondary, rgba(128,128,128,0.9)); font-size: 12px; } .ds-pri { font-weight: 600; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; } .ds-pri-p1 { color: var(--dsw-alias-label-primary, inherit); } .ds-card-title { flex: 1 1 auto; } .ds-card-meta { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font-size: 12px; color: var(--dsw-alias-label-secondary, inherit); } .ds-chip { border: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.3)); border-radius: 999px; padding: 1px 8px; font-size: 12px; line-height: 1.5; color: var(--dsw-alias-label-primary, inherit); }"
+    },
+    {
+      "name": "Lane",
+      "kind": "custom",
+      "refersTo": "lane",
+      "description": "One fixed-width column of the board, scrollable sideways rather than reflowing. The head carries the state name, a monospace count (M or M/N) and an over-limit pill; the over-limit count turns red. The drop target is a raised tint plus a dashed ring, because the brand token is monochrome in dark.",
+      "html": "<div class='ds-lane'>  <div class='ds-lane-head'><span class='ds-lane-name'>In Progress</span><span class='ds-lane-count'>2/2</span></div>  <div class='ds-lane-cards'><div class='ds-card'><div class='ds-card-top'><span class='ds-card-id'>T-005</span></div><div class='ds-card-title'>Fix the drop target</div></div></div></div>",
+      "css": ".ds-lane { border: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.28)); border-radius: 10px; padding: 9px; background: var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.04)); color: var(--dsw-alias-label-primary, inherit); display: flex; flex-direction: column; gap: 7px; width: 236px; min-height: 110px; } .ds-lane-head { display: flex; align-items: center; gap: 7px; line-height: 1.4; } .ds-lane-name { font-weight: 600; } .ds-lane-count { color: var(--dsw-alias-label-secondary, inherit); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; } .ds-lane-over-limit .ds-lane-count { color: var(--dsw-alias-state-error-primary, #d64545); } .ds-lane-cards { display: flex; flex-direction: column; gap: 7px; min-height: 36px; } .ds-lane-over { background: var(--dsw-alias-bg-layer-2, rgba(128,128,128,0.12)); outline: 2px dashed var(--dsw-alias-label-secondary, currentColor); outline-offset: -3px; } .ds-card { border: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.32)); border-radius: 8px; padding: 7px 9px; background: var(--dsw-alias-bg-base, transparent); cursor: grab; display: flex; flex-direction: column; gap: 5px; } .ds-card-top { display: flex; gap: 7px; align-items: baseline; flex-wrap: nowrap; } .ds-card-id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--dsw-alias-label-secondary, rgba(128,128,128,0.9)); font-size: 12px; }"
+    },
+    {
+      "name": "Empty Lane Rail",
+      "kind": "custom",
+      "refersTo": "lane-rail",
+      "description": "A lane with no cards collapses to a 46px rail with a vertical state name, so four empty lanes do not force a sideways scroll for nothing. It is still a drop target, and it opens back to full width the moment a drag begins (an empty lane that cannot be hit is not a target).",
+      "html": "<div class='ds-rail' aria-label='Review, 0 card(s)'>  <span class='ds-rail-name'>Review</span><span class='ds-rail-count'>0</span><div class='ds-rail-cards'></div></div>",
+      "css": ".ds-rail { border: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.28)); border-radius: 10px; padding: 9px 5px; background: var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.04)); color: var(--dsw-alias-label-primary, inherit); display: flex; flex-direction: column; align-items: center; gap: 3px; width: 46px; min-height: 110px; } .ds-rail-name { writing-mode: vertical-rl; font-weight: 600; } .ds-rail-count { color: var(--dsw-alias-label-secondary, inherit); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; } .ds-rail-cards { width: 100%; min-height: 48px; }"
+    },
+    {
+      "name": "Checklist Row",
+      "kind": "custom",
+      "refersTo": "button-pressed",
+      "description": "A Definition of Ready / Definition of Done row: the button vocabulary plus a drawn 14px glyph at one stroke width in currentColor, with aria-pressed as the only source of truth. The unticked case appends the words '· unticked', because the amber that colours it in dark cannot carry small text on white.",
+      "html": "<button class='ds-check' type='button' aria-pressed='false'><svg class='ds-check-glyph' width='14' height='14' viewBox='0 0 16 16' fill='none' stroke='currentColor' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round' aria-hidden='true' focusable='false'><rect x='2' y='2' width='12' height='12' rx='2.5'></rect></svg><span>acceptance · unticked</span></button> <button class='ds-check' type='button' aria-pressed='true'><svg class='ds-check-glyph' width='14' height='14' viewBox='0 0 16 16' fill='none' stroke='currentColor' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round' aria-hidden='true' focusable='false'><rect x='2' y='2' width='12' height='12' rx='2.5'></rect><path d='M5 8.2 7.4 10.6 11 5.6'></path></svg><span>acceptance</span></button>",
+      "css": ".ds-check { display: flex; gap: 8px; align-items: center; cursor: pointer; border: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.35)); background: transparent; color: var(--dsw-alias-label-primary, inherit); border-radius: 7px; padding: 3px 9px; font: inherit; line-height: 1.4; text-align: left; transition: background-color 140ms ease-out, border-color 140ms ease-out, transform 140ms ease-out; } .ds-check:hover { background: var(--dsw-alias-bg-layer-2, rgba(128,128,128,0.12)); } .ds-check:active { transform: translateY(1px); } .ds-check:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary, #4c8bf5); outline-offset: 2px; } .ds-check[aria-pressed='true'] { background: var(--dsw-alias-bg-layer-2, rgba(128,128,128,0.12)); border-color: var(--dsw-alias-border-l2, var(--dsw-alias-border-l1, rgba(128,128,128,0.5))); font-weight: 600; } .ds-check-glyph { flex: 0 0 auto; } @media (prefers-reduced-motion: reduce) { .ds-check { transition: none; } .ds-check:active { transform: none; } }"
+    },
+    {
+      "name": "Refusal Notice",
+      "kind": "custom",
+      "refersTo": "notice",
+      "description": "The refusal strip: a 1px border recoloured in the state colour, the message in the product's own words, the missing vocabulary in monospace, and a Dismiss button that borrows the button rules.",
+      "html": "<div class='ds-notice ds-notice-refusal' role='status' aria-live='polite'>  <span>cannot leave the backlog: 2 Definition of Ready check(s) unticked</span>  <span class='ds-notice-missing'>missing: outcome, acceptance</span>  <button class='ds-btn' type='button'>Dismiss</button></div>",
+      "css": ".ds-notice { border: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.35)); border-radius: 7px; padding: 7px 11px; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; color: var(--dsw-alias-label-primary, inherit); } .ds-notice-refusal { border-color: var(--dsw-alias-state-error-primary, #d64545); } .ds-notice-missing { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--dsw-alias-label-secondary, inherit); } .ds-notice .ds-btn { border: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.35)); background: transparent; color: var(--dsw-alias-label-primary, inherit); border-radius: 7px; padding: 3px 9px; font: inherit; line-height: 1.4; cursor: pointer; transition: background-color 140ms ease-out, border-color 140ms ease-out; } .ds-notice .ds-btn:hover { background: var(--dsw-alias-bg-layer-2, rgba(128,128,128,0.12)); } .ds-notice .ds-btn:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary, #4c8bf5); outline-offset: 2px; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "A departures board for work: the state of play legible in one glance, and every card's next legal move one interaction away.",
+    "overview": "This metaphor is proposed by this regeneration and awaits Dhira's confirmation — it is not yet his chosen name. Everything else in this file is read from the code.\n\nThe panel is a guest, not a host. It renders inside the DSH desktop app's left sidebar as the Kanban entry, under the heading Board, and it declares no palette, no font family and no page background of its own: every colour resolves through one of the app's --dsw-* theme tokens, so light and dark arrive for free and a theme change needs no edit here. PRODUCT.md makes this binding — \"carrying its own palette is not on offer\" — and the code obeys it down to the fallbacks, which exist only so a missing token degrades rather than breaks. Density is the aesthetic: 13px body text, a 7px working rhythm, five fixed 236px lanes that scroll sideways rather than compress, and a card whose whole summary is three short rows.\n\nThe surface is flat, hairline-driven and tonal. There is no box-shadow anywhere in the stylesheet, no gradient and no keyframe; depth is a 1px hairline, a radius that steps with the surface's importance, and the app's background tiers (a lane on bg-layer-1, a card on bg-base, a hover on bg-layer-2). What the panel does author is response: one 140ms ease-out transition on background, border and transform, a 1px press nudge, and a shared focus ring — all of it switched off under prefers-reduced-motion. Colour is rationed to the point of austerity. The token named brand-primary resolves, in this app, to the same value as label-primary — so \"the accent\" is the foreground, not a hue, and the blue in the declared fallback never reaches the screen when the token is present. Red, amber and green each carry one meaning and no emphasis.\n\nTypography is not a decision this panel makes: it inherits the app's face and authors only a scale (18/13/12px) plus one rule — monospace marks identity and measurement, not \"technical\" flavour. Card ids, lane counts, priority badges, flow metrics, history rows and the rev · cards sub-line are monospace; titles, labels and buttons are not. Copy is plain and specific: controls name their action (\"Dismiss\", \"Refresh\", \"Add\", \"Drop\", \"Unblock\"), refusals name the missing thing (missing: outcome, acceptance) instead of blaming the input, and every state that colour carries is also spelled out in words, because the light theme cannot carry amber as text.",
+    "keyCharacteristics": [
+      "Zero shadows, zero gradients, zero keyframes; depth comes from 1px hairlines, a radius step and the app's tint tiers.",
+      "Twelve --dsw-* tokens carry every colour in 45 references; --dsw-alias-brand-primary resolves to the same value as --dsw-alias-label-primary, so the accent is monochrome in practice.",
+      "One authored motion moment: 140ms ease-out on background-color, border-color and transform, with prefers-reduced-motion: reduce switching it off.",
+      "Amber and --dsw-alias-label-tertiary are dark-theme enhancements only, because both fail AA on the light theme.",
+      "Fixed 236px lanes in a horizontally scrolling row; an empty lane is a 46px rail that opens to full width while a drag is live.",
+      "Monospace is reserved for identity, machine vocabulary and measurement.",
+      "State is a 1px state-coloured border plus a word — never a thick side stripe, never colour alone."
+    ],
+    "rules": [
+      {
+        "name": "The Borrowed Palette Rule",
+        "body": "The panel owns no colour. Every value resolves to a --dsw-* token; the literal after the comma is a fallback for a missing token, never a colour to design with. A new screen that needs a colour needs a token the app already provides.",
+        "section": "colors"
+      },
+      {
+        "name": "The Accent-Is-The-Foreground Rule",
+        "body": "brand-primary and label-primary resolve to the same value in this app. Nothing may assume the accent is a hue: a design that leans on \"blue\" leans on a fallback that is not painted, and a state that must be seen needs weight, a border or a word, not the brand token.",
+        "section": "colors"
+      },
+      {
+        "name": "The AA-Per-Theme Rule",
+        "body": "A colour that fails AA on light may carry text only inside body[data-ds-dark-theme], where it is a redundant enhancement over a default that passes. Amber (#f59e0b, 2.15:1 on white) and label-tertiary (#81858c, 3.71:1) are the two, and the panel's own test refuses any unscoped text use of either.",
+        "section": "colors"
+      },
+      {
+        "name": "The Meaning-Only Rule",
+        "body": "Red means refused, excepted, P0 or stale; amber means blocked, P1, ageing or unticked; green means done. None is available for emphasis, decoration or emphasis-by-size.",
+        "section": "colors"
+      },
+      {
+        "name": "The Monospace Is Data Rule",
+        "body": "Monospace marks an identifier or a measurement — card id, lane count, priority badge, metrics, history, the rev · cards line, the missing: vocabulary — never \"technical\" flavour, never a title, never body copy.",
+        "section": "typography"
+      },
+      {
+        "name": "The One Heading Rule",
+        "body": "The panel has exactly one heading, at 18px/600. Section labels inside the drawer are 12px dim spans (detail, move, block, drop, Definition of Ready, history), not headings — the scale has no second display step.",
+        "section": "typography"
+      },
+      {
+        "name": "The No-Shadow Rule",
+        "body": "Surfaces are flat at rest and flat under the pointer. Depth comes from a hairline, a radius and a tint step, never from box-shadow; a raised look is bought with bg-layer-2, not blur.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Response-Not-Entrance Rule",
+        "body": "Motion exists only as a 140ms ease-out answer to state, and every transition is switched off wholesale under prefers-reduced-motion. No element animates into existence.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do style every colour through a --dsw-* token with a literal fallback, exactly as styles.ts does — the app's theme is the palette, and it must work in both modes without an edit.",
+      "Do use border-l1 hairlines, the radius scale (7/8/10/999px) and the three background tiers to separate surfaces; that is the whole depth vocabulary.",
+      "Do give every interactive control the shared 2px brand focus ring (2px offset; 1px on a card), and never leave a control on the browser default.",
+      "Do signal a card's exception by recolouring its whole 1px border in the state colour — --dsw-alias-state-error-primary for expedite, --dsw-alias-state-warn-primary for blocked — and let the chip text name the state.",
+      "Do de-emphasise with --dsw-alias-label-secondary, and use --dsw-alias-label-tertiary only as a dark-theme enhancement inside body[data-ds-dark-theme].",
+      "Do keep a colour that fails AA on light out of a text rule unless it is scoped to the dark marker; the panel's own test enforces exactly this.",
+      "Do keep lanes at flex: 0 0 236px inside an overflow-x: auto row with a 140px floor, and collapse an empty lane to the 46px rail that opens while a drag is live.",
+      "Do keep the card drawer inline, below the board, capped at max-height: 260px with its own scroll.",
+      "Do make a pressed control a tint (bg-layer-2) plus border-l2 plus weight 600 — never a colour on its own.",
+      "Do keep the 140ms ease-out transitions as the only motion, and cancel them under prefers-reduced-motion: reduce.",
+      "Do use monospace for card ids, lane counts, priority badges, flow metrics, history rows and the rev · cards line, and draw every icon as inline SVG in one stroke width with currentColor.",
+      "Do keep a keyboard path for every pointer action, and announce state changes through the single aria-live region."
+    ],
+    "donts": [
+      "Don't introduce a colour that is not one of the app's --dsw-* tokens. Invented --dsw-*/--dsh-* names resolve to nothing and fall back silently; the panel shipped ten of them once and was off-theme in both modes.",
+      "Don't hardcode a hex, rgba() or oklch() value as a design colour — the literals in styles.ts are fallbacks for absent tokens.",
+      "Don't add box-shadow, a gradient, a glass/blur treatment, or a border-left/border-right (or any one-sided border) above 1px. The 3px coloured side stripe the panel once used is banned by the craft floor and has been removed.",
+      "Don't assume --dsw-alias-brand-primary is a hue. It resolves to the app's foreground value; a brand-coloured fill or a brand-coloured pressed state is the bug that shipped once already.",
+      "Don't carry text in amber or in --dsw-alias-label-tertiary outside body[data-ds-dark-theme].",
+      "Don't use opacity as the de-emphasis ladder — the label tokens are the ladder, and the only opacity left is 0.5 on a disabled button.",
+      "Don't paint a page background — .kb-page, notices, the drawer, buttons, inputs and cards stay transparent-by-token so the host panel shows through.",
+      "Don't give the board a sixth lane for dropped, or any other lane beyond the five BOARD_STATES.",
+      "Don't use red, amber or green for emphasis, size or decoration.",
+      "Don't make the drawer, the drop-reason prompt or any board action a modal dialog — dropping needs a written reason, so it is an inline field whose button stays disabled until there is one.",
+      "Don't use monospace for prose, titles or button labels.",
+      "Don't let a state be carried by colour alone: the card prints the word, the lane prints M/N, the unticked row prints · unticked."
+    ]
+  }
+}
