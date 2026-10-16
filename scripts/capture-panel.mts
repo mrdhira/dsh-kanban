@@ -318,17 +318,32 @@ function fixture(): Record<string, unknown> {
   const tasks = (payload.tasks as Record<string, unknown>[]).map((task) =>
     task.id === 'T-001' ? { ...task, dor: fullDor } : task
   );
-  return { ...payload, tasks };
+  // A dropped card, so the `Dropped` view has something to show. The board itself still draws five
+  // lanes: this card is in the store and nowhere on the default board, which is the whole reason the
+  // view exists.
+  const dropped = { ...(tasks[0] as Record<string, unknown>), id: 'T-006', title: 'card T-006', state: 'dropped', droppedReason: 'superseded', position: 0 };
+  return { ...payload, tasks: [...tasks, dropped], total: tasks.length + 1 };
 }
 
-/** Mount the real panel and return its rendered markup. `respondWithBoard` + `flush` as the DOM test does. */
-async function renderMarkup(): Promise<string> {
+/**
+ * Mount the real panel and return its rendered markup. `respondWithBoard` + `flush` as the DOM test does.
+ *
+ * `filter` is applied to the store before the first paint, so one run can capture the default board
+ * and the `Dropped` view without a second headless Chrome pass. `window.__DSH_TRANSPORT__` is what
+ * the bundle reads for the host origin; leaving it unset is fine because the fake `fetch` answers.
+ */
+async function renderMarkup(filter?: Record<string, unknown>): Promise<string> {
   const loaded = loadBundle();
   respondWithBoard(fixture());
-  const view = mount(loaded, loaded.slot('main'), { store: freshStore(loaded) });
+  const store = freshStore(loaded) as { setFilter(next: Record<string, unknown>): void };
+  if (filter !== undefined) store.setFilter(filter);
+  const view = mount(loaded, loaded.slot('main'), { store });
   await flush();
   const markup = view.container.innerHTML;
   if (markup.trim().length === 0) throw new Error('the panel rendered nothing');
+  if (filter !== undefined && !markup.includes('data-lane="dropped"')) {
+    throw new Error('the Dropped view rendered without its lane — the filter did not reach the board');
+  }
   view.unmount();
   return markup;
 }
@@ -528,6 +543,11 @@ async function main(): Promise<void> {
 
   const markup = await renderMarkup();
   console.log(`[render] panel markup: ${String(markup.length)} chars, ${String((markup.match(/data-card=/g) ?? []).length)} cards`);
+  // The one view this pass added, rendered for real: the dropped lane, its card, and the toolbar
+  // button that reaches it. Captured alongside the board so a visual review can see the new surface
+  // in both themes rather than take the DOM suite's word for it.
+  const droppedMarkup = await renderMarkup({ state: ['dropped'] });
+  console.log(`[render] dropped-view markup: ${String(droppedMarkup.length)} chars`);
 
   const written: string[] = [];
   const unresolvedReport: string[] = [];
@@ -572,6 +592,18 @@ async function main(): Promise<void> {
       }
       written.push(`capture-${theme}-${String(width)}.png  ${String(png.bytes)} bytes  ${String(png.width)}x${String(png.height)}  ${out}`);
     }
+
+    // One extra shot per theme at the wider size: the `Dropped` view. The narrow size keeps the two
+    // board captures it always had, so the pass stays one headless Chrome per file rather than four.
+    const droppedDoc = htmlDocument({ theme, tokens: themeTokens, styles, markup: droppedMarkup });
+    for (const token of droppedDoc.unresolved) unresolvedReport.push(`dropped ${theme}: ${token}`);
+    const droppedPath = join(TEMP_DIR, `panel-${theme}-dropped.html`);
+    writeFileSync(droppedPath, droppedDoc.html, 'utf8');
+    const droppedOut = join(OUT_DIR, `capture-${theme}-dropped-1600.png`);
+    screenshot(droppedPath, droppedOut, 1600, 900);
+    const droppedPng = pngSize(droppedOut);
+    if (droppedPng.bytes < 1500) throw new Error(`${droppedOut} is only ${String(droppedPng.bytes)} bytes — the capture looks blank`);
+    written.push(`capture-${theme}-dropped-1600.png  ${String(droppedPng.bytes)} bytes  ${String(droppedPng.width)}x${String(droppedPng.height)}  ${droppedOut}`);
   }
 
   console.log(`\n[html] ${TEMP_DIR}/panel-<theme>.html (and panel-<theme>-probe.html for the [scoped] check)`);

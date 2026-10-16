@@ -314,11 +314,6 @@ export function createBoardStore(transport: BoardTransport, options: BoardStoreO
   };
 }
 
-/** The columns a state renders, for a component that only has the snapshot. */
-export function columnsFor(state: BoardState) {
-  return state.payload === null ? [] : columnsOf(state.payload, state.filter);
-}
-
 /** The card the drawer is showing, from the snapshot. */
 export function selectedTask(state: BoardState): Task | undefined {
   if (state.selectedId === null || state.payload === null) return undefined;

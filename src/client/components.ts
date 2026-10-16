@@ -21,11 +21,11 @@
 import type { ReactElement } from 'react';
 import type { BoardStore, BoardState } from './store.js';
 import { selectedTask } from './store.js';
-import { BOARD_STATES, EMPTY_FILTER, ageBand, ageDays, classLabel, columnsOf, formatAge, formatPercent, formatStamp, hasFilter, moveTargets, priorityCode, priorityWord, sameFilter, type Column } from './model.js';
+import { BOARD_STATES, DROPPED_FILTER, EMPTY_FILTER, ageBand, ageDays, classLabel, columnsOf, filterCards, formatAge, formatPercent, formatStamp, hasFilter, moveTargets, priorityCode, priorityWord, sameFilter, type Column } from './model.js';
 import { beginDrag, dragOver, dropTarget, indexFromPointer, keyboardTarget, type DragState } from './dnd.js';
 import { API_PREFIX } from './api.js';
 import { STYLES, STYLE_ID } from './styles.js';
-import { CHECK_LABEL, CLASSES_OF_SERVICE, CLASS_LABEL, PRIORITIES, PRIORITY_LABEL, STATE_LABEL, type CheckId, type ClassOfService, type Priority, type State, type Task } from '../store/types.js';
+import { CHECK_LABEL, CLASSES_OF_SERVICE, CLASS_LABEL, DEFAULT_DOW, PRIORITIES, PRIORITY_LABEL, STATE_LABEL, type CheckId, type ClassOfService, type Priority, type State, type Task } from '../store/types.js';
 
 /** The `require('react')` handle, passed down as a prop so this module stays realm-agnostic. */
 export interface ReactLike {
@@ -54,6 +54,28 @@ interface ChildProps {
   readonly onAnnounce: (message: string) => void;
 }
 
+/**
+ * How the drawer that is on screen was opened: `keyboard` (Enter on a card) or `pointer` (a click).
+ *
+ * The drawer is focused programmatically, and whether a browser paints `:focus-visible` for a
+ * script-driven `focus()` is not something the panel can rely on — so wherever it is, the keyboard
+ * path can lose its ring. This records the one fact the browser does not expose here, and it is read
+ * only while the drawer element mounts, so it cannot go stale between renders.
+ */
+let drawerOpenedByKeyboard = false;
+
+/**
+ * The empty board the pending state draws.
+ *
+ * Only `columnsOf`'s inputs are here — the DoW (for the WIP limits) and an empty task list — because
+ * that is all a column needs to exist: a state, a label, a limit and no cards. So the loading state
+ * shows the same five lanes the real board will, each with one skeleton line where a card will land,
+ * instead of an empty panel. Nothing else is invented: no card, no count, no metric.
+ */
+function pendingColumns(): Column[] {
+  return columnsOf({ dow: DEFAULT_DOW, tasks: [] } as unknown as Parameters<typeof columnsOf>[0], EMPTY_FILTER);
+}
+
 // ------------------------------------------------------------------ chrome
 
 /**
@@ -63,6 +85,10 @@ interface ChildProps {
  * a drawer's move row) rather than inside a block box the browser styles, and a toggle whose open
  * state is testable DOM is worth more here than the platform's own widget. The label never changes
  * when it is used — a control that renames itself is two controls to a reader.
+ *
+ * The caret is what tells it apart from a pressed view at a glance: pressed and open now share the
+ * tint, the stronger hairline and the weight, so without a shape cue the two states would be the same
+ * picture. It is `aria-hidden`, so the accessible name stays exactly the label.
  */
 function disclosureButton(
   React: ReactLike,
@@ -84,7 +110,24 @@ function disclosureButton(
       ...(props.ariaLabel === undefined ? {} : { 'aria-label': props.ariaLabel }),
       onClick: props.onToggle,
     },
-    props.label
+    props.label,
+    React.createElement(
+      'svg',
+      {
+        className: 'kb-more-caret',
+        width: 9,
+        height: 9,
+        viewBox: '0 0 10 10',
+        fill: 'none',
+        stroke: 'currentColor',
+        strokeWidth: 1.5,
+        strokeLinecap: 'round',
+        strokeLinejoin: 'round',
+        'aria-hidden': 'true',
+        focusable: 'false',
+      },
+      React.createElement('path', { d: 'M3.2 1.6 6.4 5 3.2 8.4' })
+    )
   );
 }
 
@@ -99,6 +142,10 @@ function NoticeStrip(props: ChildProps): ReactElement | null {
     notice.missing === undefined || notice.missing.length === 0
       ? null
       : React.createElement('span', { className: 'kb-notice-missing' }, `missing: ${notice.missing.join(', ')}`),
+    // Nothing else here: a refusal is answered by editing the thing it named and the control that sent
+    // it is still on screen, and a notice-level failure already has a recovery on the panel — the
+    // header's `Refresh`. A second button beside `Dismiss` that did the same thing would be surface
+    // with no new reach. The board-level error below is the case where nothing else is left to press.
     React.createElement('button', { className: 'kb-btn', type: 'button', onClick: () => store.notice(null) }, 'Dismiss')
   );
 }
@@ -199,6 +246,9 @@ function CardView(props: CardProps): ReactElement {
   const classes = ['kb-card'];
   if (task.classOfService === 'expedite') classes.push('kb-card-expedite');
   if (task.blockedReason !== null) classes.push('kb-card-blocked');
+  // A dropped card says so by its whole card: dim, and beside the drawn tick, the one state that is
+  // neither a warning nor a verdict. It is only ever on screen in the Dropped view.
+  if (task.state === 'dropped') classes.push('kb-card-dropped');
   // The top row holds the id, the priority code and the age inside a 236px lane, so it keeps the
   // numbers and the words move down to the chip row, which wraps without breaking a token. The words
   // are what keep the meaning alive without colour (amber cannot carry small text on white: 2.15:1
@@ -228,6 +278,9 @@ function CardView(props: CardProps): ReactElement {
   const onKeyDown = (event: { key: string; altKey: boolean; preventDefault: () => void }): void => {
     if (event.key === 'Enter') {
       event.preventDefault();
+      // The panel is about to move the keyboard into the drawer itself, and a programmatic focus is
+      // exactly the case a browser may not paint a ring for. Claim it here, where the cause is known.
+      drawerOpenedByKeyboard = true;
       void store.select(task.id);
       return;
     }
@@ -269,6 +322,14 @@ function CardView(props: CardProps): ReactElement {
       onKeyDown,
       onClick: (event: { currentTarget?: { focus?: () => void } }) => {
         // Keep the keyboard's place when the pointer opens a card: the drawer returns focus here.
+        // A click that arrives while a drawer already holds focus is not the pointer opening a new
+        // one, so it does not clear the keyboard's claim on the drawer already on screen. Read
+        // duck-typed rather than through `instanceof HTMLElement`: the bundle is evaluated in a
+        // realm that does not have the Node global (the harness relies on that).
+        const active: { readonly className?: unknown } | null = document.activeElement;
+        if (typeof active?.className !== 'string' || !active.className.includes('kb-drawer')) {
+          drawerOpenedByKeyboard = false;
+        }
         event.currentTarget?.focus?.();
         void store.select(task.id);
       },
@@ -294,10 +355,12 @@ interface LaneProps extends ChildProps {
   readonly drag: DragState | null;
   readonly setDrag: (next: DragState | null) => void;
   readonly cardNodes: CardNodes;
+  /** True while the first payload is still in flight: the lane draws a skeleton instead of a verdict. */
+  readonly loading: boolean;
 }
 
 function Lane(props: LaneProps): ReactElement {
-  const { React, state, store, column, drag, setDrag, onAnnounce, cardNodes } = props;
+  const { React, state, store, column, drag, setDrag, onAnnounce, cardNodes, loading } = props;
   // A ref to the lane's card list, so a drop lands where the gap appeared rather than at the end.
   const cardsRef = React.useRef<{ children?: ArrayLike<{ getBoundingClientRect(): { top: number; height: number } }> } | null>(null);
   const isOver = drag?.overState === column.state;
@@ -320,6 +383,7 @@ function Lane(props: LaneProps): ReactElement {
   // because a drop target you cannot hit is not a drop target.
   if (column.cards.length === 0) classes.push('kb-lane-empty');
   if (column.cards.length === 0 && drag !== null) classes.push('kb-lane-awake');
+  if (column.cards.length === 0 && loading) classes.push('kb-lane-loading');
 
   return React.createElement(
     'div',
@@ -355,9 +419,8 @@ function Lane(props: LaneProps): ReactElement {
     React.createElement(
       'div',
       { className: 'kb-cards', ref: cardsRef },
-      column.cards.length === 0
-        ? React.createElement('div', { className: 'kb-empty' }, 'nothing here')
-        : column.cards.map((task) =>
+      column.cards.length > 0
+        ? column.cards.map((task) =>
             React.createElement(CardView, {
               key: task.id,
               React,
@@ -370,6 +433,12 @@ function Lane(props: LaneProps): ReactElement {
               cardNodes,
             })
           )
+        : // Pending is not empty. A skeleton line is drawn where a card will land, so the lane is
+          // never read as the answer while the first payload is still in flight; `aria-busy` on the
+          // row above is the announced half of the same state.
+          loading
+          ? React.createElement('div', { className: 'kb-skeleton', 'aria-hidden': 'true' })
+          : React.createElement('div', { className: 'kb-empty' }, 'nothing here')
     )
   );
 }
@@ -467,9 +536,19 @@ function Drawer(props: DrawerProps): ReactElement {
    * happens to this card next?" nine times in ten. Every other target is one click behind `More…`
    * beside it, so nothing became unreachable; it only stopped competing. `dropped` is not in this
    * menu at all: a drop is reached through Drop and its reason, at the bottom.
+   *
+   * A card whose state is not on the board — a dropped one, seen in the Dropped view — has no "next
+   * lane", so the primary move is the way back in: the first lane. Without that the drawer of a
+   * dropped card offered `Close` and nothing else, which is the same defect as having no view at all,
+   * one layer deeper.
    */
   const here = BOARD_STATES.indexOf(task.state);
-  const next = here >= 0 && here + 1 < BOARD_STATES.length ? (BOARD_STATES[here + 1] as State) : null;
+  const next =
+    here >= 0 && here + 1 < BOARD_STATES.length
+      ? (BOARD_STATES[here + 1] as State)
+      : here < 0
+        ? (BOARD_STATES[0] as State | undefined) ?? null
+        : null;
   const otherMoves = BOARD_STATES.filter((target) => target !== task.state && target !== next);
   const moveButton = (target: State): ReactElement =>
     React.createElement(
@@ -499,7 +578,17 @@ function Drawer(props: DrawerProps): ReactElement {
 
   return React.createElement(
     'div',
-    { className: 'kb-drawer', 'data-drawer': task.id, tabIndex: -1, ref: drawerRef, onKeyDown },
+    {
+      className: 'kb-drawer',
+      'data-drawer': task.id,
+      // Read once, at mount: this element is keyed by card, so a new drawer re-reads it and the open
+      // drawer keeps the answer it was given. The stylesheet uses it to draw the ring the browser may
+      // decline to draw for the programmatic focus below.
+      'data-open': drawerOpenedByKeyboard ? 'keyboard' : 'pointer',
+      tabIndex: -1,
+      ref: drawerRef,
+      onKeyDown,
+    },
     React.createElement(
       'div',
       { className: 'kb-drawer-head' },
@@ -887,7 +976,17 @@ export function BoardPage(props: BoardProps): ReactElement {
     };
   }, [documentRef]);
 
-  const columns = state.payload === null ? [] : columnsOf(state.payload, state.filter);
+  /**
+   * Two pending states, both already in the store and neither rendered before this pass:
+   * `loading` is the first payload in flight (the header says `connecting…`), `busy` is a write in
+   * flight. They are drawn on the board row — a dim, `aria-busy` board — because that row is the one
+   * thing on screen in every layout. The lanes are still drawn while the first read is in flight (an
+   * empty lane row with one skeleton line each), which is the whole point: they show what is coming
+   * rather than an empty panel, and no card is invented to fill them.
+   */
+  const loading = state.status === 'loading';
+  const busy = loading || state.busy;
+  const columns = state.payload === null ? (loading ? pendingColumns() : []) : columnsOf(state.payload, state.filter);
   const shown = columns.reduce((total, column) => total + column.cards.length, 0);
   const total = state.payload?.total ?? 0;
   const filtered = hasFilter(state.filter);
@@ -970,6 +1069,22 @@ export function BoardPage(props: BoardProps): ReactElement {
             onClick: () => store.setFilter(EMPTY_FILTER),
           },
           'All'
+        ),
+        // `dropped` has no lane on the board — by design, and the brief for this pass repeats it — but
+        // a card can be dropped from the drawer and the state had no view, so a dropped card left the
+        // panel and the only way back to it was the CLI. This is the narrowest fix: not a sixth lane,
+        // just a view that names the one state the board refuses to draw. It is a peer of the saved
+        // views and `All` rather than a new control, and `All` keeps its escape role unchanged.
+        React.createElement(
+          'button',
+          {
+            className: 'kb-btn',
+            type: 'button',
+            'data-action': 'dropped',
+            'aria-pressed': sameFilter(state.filter, DROPPED_FILTER),
+            onClick: () => store.setFilter(DROPPED_FILTER),
+          },
+          'Dropped'
         )
       ),
       React.createElement('span', { className: 'kb-spacer' }),
@@ -1015,17 +1130,35 @@ export function BoardPage(props: BoardProps): ReactElement {
     state.status === 'error' && state.payload === null
       ? React.createElement(
           'div',
-          { className: 'kb-notice kb-notice-error' },
+          { className: 'kb-notice kb-notice-error', role: 'status', 'aria-live': 'polite' },
           // Name everything a reader needs to tell "the route is down" from "the browser blocked it":
           // the URL attempted, the origin it came from, and what the *document* says it is. The first
           // live failure said only "Failed to fetch" beside a working `curl` — and whether that request
           // is same-origin or cross-origin is the whole diagnosis, so the panel states it.
-          `board unavailable: ${state.lastError ?? 'unknown'} — tried ${state.origin.origin}${API_PREFIX} · document ${state.origin.document.protocol} ${state.origin.document.origin} · host origin from ${state.origin.source} · base ${state.origin.document.baseURI}`
+          `board unavailable: ${state.lastError ?? 'unknown'} — tried ${state.origin.origin}${API_PREFIX} · document ${state.origin.document.protocol} ${state.origin.document.origin} · host origin from ${state.origin.source} · base ${state.origin.document.baseURI}`,
+          // The error is a state with an answer, not only a sentence: the same Refresh the header
+          // carries, on the notice that names the failure. It says so in words and it is a real button,
+          // so the recovery is not a colour or a guess.
+          React.createElement(
+            'button',
+            {
+              className: 'kb-btn',
+              type: 'button',
+              'data-action': 'retry-board',
+              onClick: () => void store.refresh(true),
+            },
+            'Retry'
+          )
         )
       : React.createElement(
           'div',
-          { className: 'kb-lanes' },
-          columns.map((column) => React.createElement(Lane, { key: column.state, ...child, column, drag, setDrag }))
+          {
+            className: `kb-lanes${busy ? (loading ? ' kb-lanes-loading' : ' kb-lanes-busy') : ''}`,
+            // The board a mutation is in flight against is the board the human should not trust for a
+            // moment; `aria-busy` is how that is said to a reader who cannot see the dimming.
+            'aria-busy': busy,
+          },
+          columns.map((column) => React.createElement(Lane, { key: column.state, ...child, column, drag, setDrag, loading }))
         ),
     React.createElement(SprintBar, child),
     // Keyed by card, so opening a different card hands focus to the new drawer rather than reusing

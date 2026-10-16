@@ -18,7 +18,6 @@ import {
   STATES,
   WIP_STATES,
   compareInColumn,
-  stateIndex,
   type DefinitionOfWorkflow,
   type Priority,
   type SavedView,
@@ -48,7 +47,13 @@ export interface BoardPayload {
   readonly buildId: string;
 }
 
-/** The columns the board draws: everything except `dropped`, which is a view, not a lane. */
+/**
+ * The columns the board draws by default: everything except `dropped`, which is a view, not a lane.
+ *
+ * The default board stays five lanes on purpose — a sixth lane is the surface the distill pass took
+ * away. `dropped` is reached through its own view, which narrows the board to that one lane (see
+ * `filterStates`), so a dropped card is reachable and the default board is unchanged.
+ */
 export const BOARD_STATES: readonly State[] = STATES.filter((state) => state !== 'dropped');
 
 /** A filter the human can apply from the toolbar. */
@@ -71,6 +76,16 @@ export interface ViewFilter {
  * would otherwise edit this constant, and every later board would open with the last selection.
  */
 export const EMPTY_FILTER: ViewFilter = Object.freeze({});
+
+/**
+ * The `Dropped` view's filter.
+ *
+ * A dropped card has no lane on the default board, and the drawer's Drop control is the only way to
+ * reach that state — so without a view that names it, a dropped card was unreachable from the panel
+ * and the only way back was the CLI. This is that view: frozen for the same reason as `EMPTY_FILTER`,
+ * because both are shared constants a caller could otherwise edit in place.
+ */
+export const DROPPED_FILTER: ViewFilter = Object.freeze({ state: ['dropped'] as readonly State[] });
 
 /** One drawn column. */
 export interface Column {
@@ -116,7 +131,7 @@ export function filterCards(tasks: readonly Task[], filter: ViewFilter): Task[] 
 /** The columns to draw, in board order, each already sorted by the board's rule. */
 export function columnsOf(payload: BoardPayload, filter: ViewFilter = EMPTY_FILTER): Column[] {
   const tasks = filterCards(payload.tasks, filter);
-  return BOARD_STATES.map((state) => {
+  return filterStates(filter).map((state) => {
     const cards = tasks.filter((task) => task.state === state).sort(compareInColumn);
     const limit = limitFor(state, payload.dow);
     return {
@@ -127,6 +142,24 @@ export function columnsOf(payload: BoardPayload, filter: ViewFilter = EMPTY_FILT
       over: limit !== undefined && cards.length > limit,
     };
   });
+}
+
+/**
+ * The states a filter asks the board to draw.
+ *
+ * The default is the five board lanes. The one exception is a filter *named* to `dropped`: a card can
+ * be dropped from the drawer, and before this the only way back to it was the CLI — the card left the
+ * board and nothing on the panel could show it again. So a filter that names `dropped` draws that lane
+ * instead of the board's five, which is what makes the `Dropped` view a view and not a sixth lane.
+ *
+ * `All` is untouched by this: it is the empty filter, and the empty filter is still the five lanes.
+ * Only an explicit `state: ['dropped']` — the panel's own Dropped view, or a saved view that names it
+ * — changes what is drawn, so no existing view or escape hatch changes meaning.
+ */
+export function filterStates(filter: ViewFilter): readonly State[] {
+  const named = filter.state;
+  if (named !== undefined && named.length === 1 && named[0] === 'dropped') return ['dropped'];
+  return BOARD_STATES;
 }
 
 /** WIP as the guide defines it: started, not finished — blocked cards included. */
@@ -378,10 +411,4 @@ export function formatStamp(iso: string): string {
   const date = new Date(millis);
   const pad = (value: number): string => String(value).padStart(2, '0');
   return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}Z`;
-}
-
-/** Sort a card list by the state order — used by the list-style views, not the board. */
-export function byStateThenColumn(a: Task, b: Task): number {
-  const byState = stateIndex(a.state) - stateIndex(b.state);
-  return byState !== 0 ? byState : compareInColumn(a, b);
 }

@@ -27,9 +27,11 @@ import {
   setFetch,
   type LoadedBundle,
   type MountedView,
+  type RecordedCall,
 } from './harness.ts';
 import { resolveOrigin } from '../lib/v1/client/api.js';
-import { checkMoveLocally, sameFilter } from '../lib/v1/client/model.js';
+import { createBoardStore } from '../lib/v1/client/store.js';
+import { DROPPED_FILTER, EMPTY_FILTER, checkMoveLocally, columnsOf, filterStates, sameFilter } from '../lib/v1/client/model.js';
 
 const FULL_DOR = Object.fromEntries(
   ['outcome', 'acceptance', 'write-scope', 'estimate'].map((id) => [id, { at: '2026-10-01T00:00:00.000Z', by: 'human:dhira' }])
@@ -37,6 +39,15 @@ const FULL_DOR = Object.fromEntries(
 
 /** A filter the store reports as the current view: a ready card and everything past the gate. */
 const READY_VIEW = { state: ['ready', 'in-progress', 'review', 'done'] };
+
+/**
+ * The panel's own `Dropped` view, as the button sets it.
+ *
+ * A dropped card has no lane on the default board — deliberately, and the fifth lane stays gone — so
+ * this filter is the only way the panel can show one. The brief for this pass allows exactly one new
+ * affordance, and it is this view.
+ */
+const DROPPED_VIEW = { state: ['dropped'] };
 
 /**
  * The two views every new board is seeded with, as the host sends them.
@@ -50,13 +61,21 @@ const SEEDED_VIEWS = [
   { id: 'ageing', name: 'Ageing', description: 'started, not finished', filter: { state: ['in-progress', 'review'] } },
 ];
 
-/** The board the DOM tests render: one refined backlog card, one ready, two in progress, one done. */
+/**
+ * The board the DOM tests render: one refined backlog card, one ready, two in progress, one done, and
+ * one **dropped** card — the state the board has no lane for, and the reason the `Dropped` view has to
+ * exist: without it the card is in the store, in the counts and in the metrics, and nowhere on screen.
+ */
 function fixture(): Record<string, unknown> {
   const payload = boardPayload();
   const tasks = (payload.tasks as Record<string, unknown>[]).map((task) =>
     task.id === 'T-001' ? { ...task, dor: FULL_DOR } : task
   );
-  return { ...payload, tasks };
+  return {
+    ...payload,
+    tasks: [...tasks, { ...(tasks[0] as Record<string, unknown>), id: 'T-006', state: 'dropped', position: 0, droppedReason: 'superseded' }],
+    total: 6,
+  };
 }
 
 /**
@@ -420,18 +439,24 @@ test('the active view button says so, and the count says how much is hidden', as
 
   const pressed = (): (string | null)[] =>
     view.findAll('nav[aria-label="Views"] .kb-btn[aria-pressed="true"]').map((node) => node.textContent);
+  // Two controls are pressed with nothing filtered: `All`, which is the unfiltered board, and
+  // `Dropped`, whose view is the only way to the state the board does not draw. They are not in
+  // conflict — `All` is everything, `Dropped` is one state — and neither is a saved view.
   assert.deepEqual(pressed(), ['All'], 'with no filter, All is the current view and the saved view is not');
-  assert.match(view.text(), /5 cards/);
+  assert.match(view.text(), /6 cards/);
   assert.equal(view.has('nav[aria-label="Views"]'), true, 'the switcher is one named control group');
 
-  await view.click('nav[aria-label="Views"] button[aria-pressed="false"]');
+  // The saved view is the only unpressed *view* button; `Dropped` is always present, so it is named
+  // rather than counted, and the assertion above pins which buttons claim the current board.
+  await view.click('nav[aria-label="Views"] button[title="ready and beyond"]');
   await flush();
 
   // A filtered board must be distinguishable from an unfiltered one, in the toolbar itself.
   assert.deepEqual(pressed(), ['Ready']);
-  assert.match(view.text(), /showing 4 of 5 cards/);
+  assert.match(view.text(), /showing 4 of 6 cards/);
   assert.equal(view.has('[data-card="T-001"]'), false, 'the backlog card is filtered out');
   assert.equal(view.has('[data-card="T-002"]'), true);
+  assert.equal(view.has('[data-card="T-006"]'), false, 'and the dropped card is never on a filtered board');
   view.unmount();
 });
 
@@ -447,7 +472,7 @@ test('the state chip row is gone, and the views are the panel filter', async () 
   const board = view.find('nav[aria-label="Views"] button[title="everything still moving"]');
   assert.equal(board?.getAttribute('aria-pressed'), 'true', 'the view presses itself');
   assert.equal(view.has('[data-card="T-005"]'), false, 'Board filters the done lane out');
-  assert.match(view.text(), /showing 4 of 5 cards/, 'and the header says how much is hidden');
+  assert.match(view.text(), /showing 4 of 6 cards/, 'and the header says how much is hidden');
 
   // `All` is the way back out. It is not redundant with the saved views: it is the only one that
   // shows `done`, so deleting it would put finished cards out of the panel's reach.
@@ -457,6 +482,430 @@ test('the state chip row is gone, and the views are the panel filter', async () 
   assert.equal(view.has('[data-card="T-005"]'), true, 'the finished card is back');
   view.unmount();
 });
+
+// ------------------------------------------------------------------ P1.1 the Dropped view
+
+test('P1.1: the default board is still five lanes, and dropped is not one of them', async () => {
+  // The invariant this pass must not break: the distill removed a sixth lane and it stays removed.
+  // The dropped card in the fixture is in the store, the counts and the metrics and nowhere on the
+  // default board — which is exactly why the view below has to exist.
+  const view = await mountBoard(loadBundle());
+  assert.deepEqual(
+    view.findAll('[data-lane]').map((node) => node.getAttribute('data-lane')),
+    ['backlog', 'ready', 'in-progress', 'review', 'done'],
+    'five lanes, no sixth'
+  );
+  assert.equal(view.has('[data-card="T-006"]'), false, 'the dropped card is not drawn on the board');
+  assert.equal(view.has('[data-action="dropped"]'), true, 'but the view that reaches it is');
+  assert.equal(
+    view.find('[data-action="dropped"]')?.getAttribute('aria-pressed'),
+    'false',
+    'the view exists without claiming the board'
+  );
+  assert.equal(view.find('[data-action="all"]')?.getAttribute('aria-pressed'), 'true', 'All still means unfiltered');
+  view.unmount();
+});
+
+test('P1.1: the Dropped view draws the dropped lane and nothing else', async () => {
+  const view = await mountBoard(loadBundle());
+  await view.click('[data-action="dropped"]');
+  await flush();
+
+  assert.deepEqual(
+    view.findAll('[data-lane]').map((node) => node.getAttribute('data-lane')),
+    ['dropped'],
+    'one lane, the one state the board otherwise refuses to draw'
+  );
+  assert.equal(view.has('[data-card="T-006"]'), true, 'the card that vanished is reachable');
+  assert.equal(view.find('[data-card="T-006"]')?.className.includes('kb-card-dropped'), true, 'and marked as out of play');
+  assert.equal(view.find('[data-action="dropped"]')?.getAttribute('aria-pressed'), 'true');
+  assert.equal(view.find('[data-action="all"]')?.getAttribute('aria-pressed'), 'false', 'All is not claiming the board');
+  assert.match(view.text(), /showing 1 of 6 cards/, 'the header says what is on screen');
+  view.unmount();
+});
+
+test('P1.1: All stays the escape from the Dropped view, and the dropped card can be taken back', async () => {
+  const view = await mountBoard(loadBundle());
+  await view.click('[data-action="dropped"]');
+  await flush();
+  assert.deepEqual(view.findAll('[data-lane]').map((node) => node.getAttribute('data-lane')), ['dropped']);
+
+  // `All` is untouched by this pass: the way back out of a view still works, and it is still the only
+  // control that shows finished cards.
+  await view.click('[data-action="all"]');
+  await flush();
+  assert.deepEqual(
+    view.findAll('[data-lane]').map((node) => node.getAttribute('data-lane')),
+    ['backlog', 'ready', 'in-progress', 'review', 'done']
+  );
+  assert.equal(view.has('[data-card="T-006"]'), false, 'and the dropped card is out of play again');
+
+  // The way back *into* play: the card in the Dropped view is a real card, so opening it and moving it
+  // through the panel's own move set returns it to the board. Reachability was the whole defect.
+  await view.click('[data-action="dropped"]');
+  await flush();
+  await view.click('[data-card="T-006"]');
+  await flush();
+  assert.equal(view.has('[data-drawer="T-006"]'), true);
+  await view.click('[data-drawer="T-006"] button[aria-label="Move T-006 to Backlog"]');
+  await flush();
+  const mutation = lastMutation();
+  assert.equal(mutation?.body.toState, 'backlog', 'the move goes through the same route as any other');
+  assert.equal(mutation?.body.id, 'T-006');
+  assert.equal(mutation?.body.reason, undefined, 'and a reopen needs no reason; only a drop and a forced move do');
+  view.unmount();
+});
+
+test('P1.1: only a filter that names dropped draws the dropped lane', () => {
+  // The narrow rule, at the level where it is decided. `All` (the empty filter) keeps the board's five
+  // lanes, a saved view that happens to include dropped still draws the board, and only an explicit
+  // `['dropped']` — the panel's own view — swaps the lanes. That is what keeps this from becoming a
+  // sixth lane by the back door.
+  assert.deepEqual(filterStates(EMPTY_FILTER), ['backlog', 'ready', 'in-progress', 'review', 'done']);
+  assert.deepEqual(filterStates(DROPPED_FILTER), ['dropped']);
+  assert.deepEqual(filterStates({ state: ['dropped'], priority: ['p0-critical'] }), ['dropped'], 'a saved filter that names dropped is still a dropped filter');
+  assert.deepEqual(filterStates({ state: ['dropped', 'done'] }), ['backlog', 'ready', 'in-progress', 'review', 'done'], 'dropped alongside another state is the board, as it always was');
+  assert.deepEqual(filterStates({ search: 'x' }), ['backlog', 'ready', 'in-progress', 'review', 'done']);
+  // And the drawn columns follow the same rule, so the promise holds where it is rendered.
+  const payload = boardPayload() as unknown as Parameters<typeof columnsOf>[0];
+  assert.deepEqual(columnsOf(payload, EMPTY_FILTER).map((column) => column.state), ['backlog', 'ready', 'in-progress', 'review', 'done']);
+  assert.deepEqual(columnsOf(payload, DROPPED_FILTER).map((column) => column.state), ['dropped']);
+});
+
+// ------------------------------------------------------------------ P1.2 the drawer's ring
+
+test('P1.2: a drawer opened from the keyboard claims its ring, a pointer-opened one does not', async () => {
+  // The defect: the drawer is focused programmatically, `:focus-visible` is not guaranteed for a
+  // script-driven focus, and a keyboard user could open a card and see no indication of where they
+  // were. The fix is a claim in the DOM, read once at mount, plus the ring rule keyed on it.
+  const view = await mountBoard(loadBundle());
+
+  await view.focus('[data-card="T-002"]');
+  await view.key('[data-card="T-002"]', 'Enter');
+  await flush();
+  assert.equal(view.has('[data-drawer="T-002"]'), true);
+  assert.equal(
+    view.find('[data-drawer="T-002"]')?.getAttribute('data-open'),
+    'keyboard',
+    'Enter on a card moved the keyboard into the drawer, so the drawer shows it'
+  );
+  const styles = readFileSync(new URL('../src/client/styles.ts', import.meta.url), 'utf8');
+  assert.match(styles, /\.kb-drawer\[data-open="keyboard"\]:focus \{[^}]*outline: 2px solid var\(--dsw-alias-brand-primary/);
+
+  await view.unmount();
+
+  // The pointer path stays quiet: a click is not a claim about the keyboard's place.
+  const clicked = await mountBoard(loadBundle());
+  await clicked.click('[data-card="T-003"]');
+  await flush();
+  assert.equal(clicked.find('[data-drawer="T-003"]')?.getAttribute('data-open'), 'pointer');
+  clicked.unmount();
+});
+
+// ------------------------------------------------------------------ P2.3 loading is a state
+
+/**
+ * A reply the transport will wait for, then read.
+ *
+ * The harness's fake `fetch` awaits the handler's return value, so a handler that returns a promise
+ * settles to `undefined` and looks like a failure. This is a **thenable that never resolves** and
+ * carries the reply's own fields (`status`, `ok`, `text`), which is exactly how "the host has not
+ * spoken yet" looks from inside `createHttpTransport`: the status is read synchronously, the body is
+ * awaited forever.
+ */
+function neverAnsweringReply(status = 200): Promise<never> {
+  return Object.assign(new Promise<never>(() => {}), {
+    status,
+    ok: status >= 200 && status < 300,
+    text: async () => JSON.stringify({ ok: false }),
+  });
+}
+
+test('P2.3: a first load in flight is a state on the board, not only a sentence in the header', async () => {
+  const loaded = loadBundle();
+  // A read that never answers: the request is genuinely in flight, which is what `loading` means.
+  setFetch((() => neverAnsweringReply()) as never);
+  const view = mount(loaded, loaded.slot('main'), { store: freshStore(loaded) });
+  await flush();
+
+  assert.match(view.text(), /connecting…/, 'the header still says it in words');
+  const lanes = view.find('.kb-lanes');
+  assert.equal(lanes?.getAttribute('aria-busy'), 'true', 'and the board says so to a reader');
+  assert.equal(lanes?.className.includes('kb-lanes-loading'), true);
+  assert.equal(view.findAll('.kb-skeleton').length > 0, true, 'the lanes show a pending line, not a verdict');
+  assert.equal(view.has('.kb-empty'), false, 'and not "nothing here", which would be a claim');
+  view.unmount();
+});
+
+test('P2.3: a write in flight marks the board busy, and the mark follows the store', async () => {
+  const loaded = loadBundle();
+  // The busy half is injected rather than raced: the panel's only job here is to render the store's
+  // own `busy`, and a poll landing mid-write (a real store behaviour, pinned by the case below) would
+  // make a click-then-assert test flaky for a reason that has nothing to do with the render.
+  const snapshot = {
+    status: 'ready',
+    payload: boardPayload(),
+    filter: {},
+    selectedId: null,
+    detail: null,
+    notice: null,
+    origin: { origin: 'http://localhost', source: 'test', detail: '', document: { protocol: 'http:', origin: 'http://localhost', baseURI: 'http://localhost/' } },
+    busy: true,
+    lastError: null,
+  };
+  const busyStore = {
+    getSnapshot: () => snapshot,
+    subscribe: () => () => {},
+    start: () => () => {},
+    refresh: async () => {},
+    setFilter: () => {},
+    select: async () => {},
+    notice: () => {},
+    create: async () => {},
+    move: async () => {},
+    tick: async () => {},
+    patch: async () => {},
+    comment: async () => {},
+    block: async () => {},
+    unblock: async () => {},
+    drop: async () => {},
+    purge: async () => {},
+  };
+  const view = mount(loaded, loaded.slot('main'), { store: busyStore });
+  await flush();
+  const lanes = view.find('.kb-lanes');
+  assert.equal(lanes?.getAttribute('aria-busy'), 'true', 'a write in flight marks the board');
+  assert.equal(lanes?.className.includes('kb-lanes-busy'), true, 'and says which pending state it is');
+  assert.equal(lanes?.className.includes('kb-lanes-loading'), false, 'a write is not a first load');
+  assert.match(view.text(), /rev 7/, 'the board behind the write is still drawn');
+  view.unmount();
+
+  // And the quiet case, as a contrast: no busy, no mark.
+  const settled = await mountBoard(loadBundle());
+  assert.equal(settled.find('.kb-lanes')?.getAttribute('aria-busy'), 'false');
+  settled.unmount();
+});
+
+test('P2.3: a write sets the store’s busy flag and a settled write clears it', async () => {
+  // The half of the pending state the panel does not own: the store's own flag. It is asserted here
+  // rather than through a click because the store's poll runs on a timer and would race a rendered
+  // assertion — and because when this pass began, a poll landing mid-write *did* clear `busy`, so the
+  // two halves of "in flight" are worth keeping separate and honest.
+  const transport = {
+    origin: { origin: 'http://localhost', source: 'test', detail: '', document: { protocol: 'http:', origin: 'http://localhost', baseURI: 'http://localhost/' } },
+    board: async () => ({ changed: true, payload: boardPayload() as never }),
+    task: async () => ({ task: null, comments: [], events: [] }) as never,
+    mutate: async () =>
+      new Promise((resolve) => {
+        setTimeout(() => resolve({ rev: 8, result: {} }), 60);
+      }),
+    health: async () => ({}),
+  };
+  const store = createBoardStore(transport as never, { pollMs: 600_000 });
+  store.start();
+  await flush();
+  const pending = store.create('a card that waits');
+  assert.equal(store.getSnapshot().busy, true, 'a write sets the mark before it awaits the host');
+  await pending;
+  assert.equal(store.getSnapshot().busy, false, 'and clears it when the host answers');
+});
+
+// ------------------------------------------------------------------ P2.4 error is a state
+
+test('P2.4: an unreachable board is a state with a recovery, not only a sentence', async () => {
+  const loaded = loadBundle();
+  let boardReads = 0;
+  let failing = true;
+  setFetch((call) => {
+    if (call.url.includes('/board')) {
+      boardReads += 1;
+      if (failing) throw new Error('network down');
+      return { status: 200, body: { ok: true, board: boardPayload(), rev: 7 } };
+    }
+    return { status: 200, body: { ok: true, result: {} } };
+  });
+  const view = mount(loaded, loaded.slot('main'), { store: freshStore(loaded) });
+  await flush();
+
+  const notice = view.find('.kb-notice-error');
+  assert.ok(notice !== null, 'the failure is on screen');
+  assert.equal(notice.getAttribute('role'), 'status', 'and it is a state a reader is told about');
+  assert.equal(notice.getAttribute('aria-live'), 'polite');
+  assert.match(notice.textContent ?? '', /board unavailable/);
+  assert.equal(view.find('[data-action="retry-board"]')?.textContent, 'Retry', 'the recovery names itself');
+  assert.equal(view.has('.kb-lanes'), false, 'a board that could not be read is not drawn as an empty one');
+
+  const before = boardReads;
+  failing = false;
+  await view.click('[data-action="retry-board"]');
+  await flush();
+  assert.ok(boardReads > before, 'Retry asks the host again');
+  assert.equal(view.has('.kb-lanes'), true, 'and the board arrives');
+  assert.equal(view.has('.kb-notice-error'), false);
+  view.unmount();
+});
+
+// ------------------------------------------------------------------ P2.5 disabled
+
+test('P2.5: a disabled control reads as disabled, and never keeps a chosen look', async () => {
+  const styles = readFileSync(new URL('../src/client/styles.ts', import.meta.url), 'utf8');
+  // The only opacity in the sheet is the disabled one, and it is stated for the button that is both
+  // pressed and disabled -- a ticked checklist row a mutation has just taken out of action.
+  assert.match(styles, /\.kb-btn:disabled \{ opacity: 0\.5; cursor: default; \}/);
+  assert.match(styles, /\.kb-btn\[aria-pressed="true"\]:disabled \{ background: transparent; border-color: var\(--dsw-alias-border-l1/);
+  assert.equal(styles.includes('opacity: 0.4'), false, 'no second opacity was invented');
+
+  const view = await mountBoard(loadBundle());
+  // The create button is the panel's always-present disabled control: it is disabled until the title
+  // has content, and it says so as an attribute rather than as a colour.
+  assert.equal(view.find('[data-action="create"]')?.hasAttribute('disabled'), true);
+  assert.equal(view.find('[data-action="create"]')?.getAttribute('aria-pressed'), null);
+  await view.type('input[aria-label="New card title"]', 'x');
+  assert.equal(view.find('[data-action="create"]')?.hasAttribute('disabled'), false);
+  view.unmount();
+});
+
+test('P1.1: the drawer of a dropped card offers the way back, not only Close', async () => {
+  // The defect the view exposed: a dropped card's state is not in `BOARD_STATES`, so "the next lane"
+  // was null and the drawer rendered no primary move at all. A view that shows a card you cannot move
+  // is a view that shows a dead end.
+  const view = await mountBoard(loadBundle());
+  await view.click('[data-action="dropped"]');
+  await flush();
+  await view.click('[data-card="T-006"]');
+  await flush();
+  const drawer = view.find('[data-drawer="T-006"]');
+  assert.ok(drawer !== null);
+  assert.equal(drawer.querySelector('button[aria-label="Move T-006 to Backlog"]') !== null, true, 'the first lane is the way back');
+  assert.match(drawer.textContent ?? '', /→ Backlog/);
+  view.unmount();
+});
+
+// ------------------------------------------------------------------ P3/P4 stylesheet invariants
+
+test('P3.6: one fallback alpha per role, declared once, and no rule invents a fifth', () => {
+  const styles = readFileSync(new URL('../src/client/styles.ts', import.meta.url), 'utf8');
+  const sheet = styles.slice(styles.indexOf('export const STYLES'));
+
+  // A literal used more than once is a role, and a role has one value: the three that had drifted are
+  // declared together, once, next to the radii and the measure.
+  assert.match(sheet, /--kb-border-l1: rgba\(128,128,128,0\.35\)/);
+  assert.match(sheet, /--kb-bg-layer-2: rgba\(128,128,128,0\.12\)/);
+  assert.match(sheet, /--kb-label-secondary: rgba\(128,128,128,0\.9\)/);
+  assert.equal((sheet.match(/--kb-border-l1:/g) ?? []).length, 1, 'declared once');
+  assert.equal((sheet.match(/--kb-bg-layer-2:/g) ?? []).length, 1);
+  assert.equal((sheet.match(/--kb-label-secondary:/g) ?? []).length, 1);
+
+  // The drift itself, as a rule rather than as a diff: every direct fallback literal for the roles
+  // that had more than one alpha is the declared one. `var(--dsw-alias-border-l1, …)` sitting inside
+  // the nested `border-l2` chain is a different role's deliberate stronger step, not a second alpha
+  // for this one, so the text before the match decides it. Counting first keeps the failure message
+  // small — a deep-equal on a match array would print the whole stylesheet.
+  const alphas = (token: string): string[] =>
+    [...sheet.matchAll(new RegExp(`var\\(${token}, rgba\\(128,128,128,([0-9.]+)\\)\\)`, 'g'))]
+      .filter((match) => !(sheet.slice(Math.max(0, (match.index ?? 0) - 32), match.index) + match[0]).includes('--dsw-alias-border-l2, var(--dsw-alias-border-l1'))
+      .map((match) => match[1] as string);
+  const borderL1 = alphas('--dsw-alias-border-l1');
+  assert.equal(borderL1.length > 0, true, 'the role is used at all');
+  assert.equal(borderL1.length, borderL1.filter((alpha) => alpha === '0.35').length, `no rule re-states border-l1 at another alpha: ${borderL1.join(',')}`);
+  const layer2 = alphas('--dsw-alias-bg-layer-2');
+  assert.equal(layer2.length, layer2.filter((alpha) => alpha === '0.12').length);
+  const secondary = alphas('--dsw-alias-label-secondary');
+  assert.equal(secondary.length, secondary.filter((alpha) => alpha === '0.9').length);
+  // The one deliberate exception: `border-l2` states its own stronger step inside the nested chain.
+  assert.equal(sheet.includes('var(--dsw-alias-border-l2, var(--dsw-alias-border-l1, rgba(128,128,128,0.5)))'), true);
+});
+
+test('P3.8: pressed and open share one treatment, and the open state carries a shape as well', async () => {
+  const styles = readFileSync(new URL('../src/client/styles.ts', import.meta.url), 'utf8');
+  // One vocabulary for the two states, and the caret is what distinguishes them without colour.
+  assert.match(styles, /\.kb-btn\[aria-pressed="true"\], \.kb-more\[aria-expanded="true"\] \{[^}]*font-weight: 600/);
+  assert.match(styles, /\.kb-more\[aria-expanded="true"\] \.kb-more-caret \{ transform: rotate\(90deg\); \}/);
+
+  const view = await mountBoard(loadBundle(), { ...fixture(), views: SEEDED_VIEWS });
+  // Both kinds are on screen, and both say their state in an attribute rather than in a colour.
+  const toggle = view.find('[data-action="all"]');
+  assert.equal(toggle?.getAttribute('aria-pressed'), 'true');
+  assert.equal(toggle?.getAttribute('aria-expanded'), null, 'a toggle presses');
+  const disclosure = view.find('[data-action="more-host"]');
+  assert.equal(disclosure?.getAttribute('aria-expanded'), 'false');
+  assert.equal(disclosure?.getAttribute('aria-pressed'), null, 'a disclosure expands');
+  assert.equal(disclosure?.querySelector('svg.kb-more-caret') !== null, true, 'and it is drawn with a caret');
+
+  await view.click('[data-action="more-host"]');
+  await flush();
+  assert.equal(view.find('[data-action="more-host"]')?.getAttribute('aria-expanded'), 'true');
+  assert.equal(view.find('[data-action="more-host"]')?.textContent, 'Host', 'the label never renames itself');
+  view.unmount();
+});
+
+test('P3.10: the disclosure toggle is at least as tall as a button', () => {
+  const styles = readFileSync(new URL('../src/client/styles.ts', import.meta.url), 'utf8');
+  // The floor is shared, so the smallest control by type is not the smallest by target. 3px + 13px x
+  // 1.4 + 3px + 2px of border is 24px, which is the number in the rule.
+  assert.match(styles, /\.kb-btn \{[^}]*min-height: 24px/);
+  assert.match(styles, /\.kb-more \{ display: inline-flex; align-items: center; gap: 4px; padding: 1px 7px; font-size: 12px; \}/);
+  assert.match(styles, /\.kb-more-caret \{ flex: 0 0 auto/);
+});
+
+test('P4.11: every class the templates emit has a rule, and it is rendered', async () => {
+  const styles = readFileSync(new URL('../src/client/styles.ts', import.meta.url), 'utf8');
+  const sheet = styles.slice(styles.indexOf('export const STYLES'));
+  // The three template families, as the source actually builds them.
+  const priorityCodes = ['p0', 'p1', 'p2', 'p3', 'p4'];
+  const ageBands = ['fresh', 'ageing', 'stale'];
+  for (const code of priorityCodes) assert.match(sheet, new RegExp(`\\.kb-pri-${code}[ ,{]`), `kb-pri-${code} is authored`);
+  for (const band of ageBands) assert.match(sheet, new RegExp(`\\.kb-age-${band}[ ,{]`), `kb-age-${band} is authored`);
+  for (const kind of ['refusal', 'info', 'error']) assert.match(sheet, new RegExp(`\\.kb-notice-${kind} \\{`));
+  // And the resting tiers are stated, not left to inheritance: that is what makes it checkable.
+  assert.match(sheet, /\.kb-age-fresh \{ color: var\(--dsw-alias-label-secondary/);
+  assert.match(sheet, /\.kb-pri-p4 \{ color: var\(--dsw-alias-label-primary/);
+
+  // The rendered half: every card carries exactly one priority class and one age class, and the two
+  // states that are easy to leave unstyled (a fresh age, a low priority) are on screen to be styled.
+  const view = await mountBoard(loadBundle());
+  const cards = view.findAll('[data-card]');
+  assert.ok(cards.length > 0);
+  for (const card of cards) {
+    const priority = card.querySelector('.kb-pri');
+    const age = card.querySelector('.kb-age');
+    assert.ok(priority !== null && age !== null, 'every card carries a priority code and an age');
+    assert.equal(
+      priorityCodes.filter((code) => priority.className.includes(`kb-pri-${code}`)).length,
+      1,
+      `one priority class on ${String(card.getAttribute('data-card'))}`
+    );
+    assert.equal(
+      ageBands.filter((band) => age.className.includes(`kb-age-${band}`)).length,
+      1,
+      `one age band on ${String(card.getAttribute('data-card'))}`
+    );
+  }
+  assert.equal(view.find('.kb-age-fresh') !== null, true, 'a fresh age is rendered and styled');
+  assert.equal(view.find('.kb-pri-p2') !== null, true, 'so is the store default priority');
+  view.unmount();
+});
+
+test('P4.12: the browser surfaces are themed from the app tokens, each keeping its fallback', () => {
+  const styles = readFileSync(new URL('../src/client/styles.ts', import.meta.url), 'utf8');
+  assert.match(styles, /\.kb-page ::selection \{ background: var\(--dsw-alias-bg-document-selection, [^)]+\)/);
+  assert.match(styles, /\.kb-page \{ caret-color: var\(--dsw-alias-label-primary, inherit\)/);
+  assert.match(styles, /\.kb-lanes, \.kb-drawer \{ scrollbar-width: thin;/);
+  assert.match(styles, /scrollbar-color: var\(--dsw-alias-scrollbar-bg-l1, var\(--kb-label-secondary\)\) var\(--dsw-alias-scrollbar-bg-l2, transparent\)/);
+  assert.match(styles, /::-webkit-scrollbar-thumb \{[^}]*background: var\(--dsw-alias-scrollbar-bg-l1/);
+  assert.match(styles, /::-webkit-scrollbar-thumb:hover \{[^}]*background: var\(--dsw-alias-scrollbar-hover-l1/);
+});
+
+test('P4.13: the motion budget is stated in the sheet and cancelled under reduced motion', () => {
+  const styles = readFileSync(new URL('../src/client/styles.ts', import.meta.url), 'utf8');
+  assert.match(styles, /One authored motion moment, stated deliberately/);
+  assert.match(styles, /@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?\.kb-btn, \.kb-input, \.kb-card \{ transition: none; \}/);
+  assert.match(styles, /@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?\.kb-more-caret \{ transition: none; \}/);
+  assert.equal(styles.includes('@keyframes'), false, 'no keyframe was added to make polish visible');
+  assert.equal(styles.includes('animation:'), false, 'and no animation');
+});
+
+// ------------------------------------------------------------------ model helpers
 
 test('sameFilter ignores the order of a filter array, and nothing else', () => {
   // The arrays a filter carries are sets. `['done','ready']` and `['ready','done']` are the same
@@ -616,6 +1065,15 @@ test('every CSS variable the panel uses is a theme token the app actually provid
   // unavailable when the contrast pass needed it. It is the dimmest *label* role, which is what a
   // timestamp, a placeholder and a lane count are.
   //
+  // The four `--dsw-alias-scrollbar-*` / `--dsw-alias-bg-document-selection` names were re-read from
+  // the same compiled stylesheet on 2026-10-16, because the polish pass themes the browser surfaces
+  // the craft floor asks about (text selection, the scrollbars of the sideways board and the drawer
+  // body) and those are the app's own tokens for exactly that. Each resolves in both scopes:
+  // `scrollbar-bg-l1` -> `var(--dsw-static-neutral-200)` light / `neutral-700` dark; `bg-l2` ->
+  // `neutral-200`/`neutral-600`; `hover-l1` -> `neutral-300`/`neutral-600`;
+  // `bg-document-selection` -> `color-mix(in srgb, var(--dsw-static-blue-500) 40%, transparent)` in
+  // both. None is an invented name, and each keeps a literal fallback like every other token here.
+  //
   // The source text **is** the contract here, deliberately: the question is which *names* the app's
   // theme provides, and that is a fact about the app, not about this run. jsdom resolves no custom
   // properties and the app is not running in this process, so a behavioural check ("does it look
@@ -624,6 +1082,7 @@ test('every CSS variable the panel uses is a theme token the app actually provid
   // cascade — that is what the dark-block parse and the capture are for.
   const THEME_TOKENS = new Set([
     '--dsw-alias-bg-base',
+    '--dsw-alias-bg-document-selection',
     '--dsw-alias-bg-layer-1',
     '--dsw-alias-bg-layer-2',
     '--dsw-alias-bg-overlay',
@@ -633,6 +1092,9 @@ test('every CSS variable the panel uses is a theme token the app actually provid
     '--dsw-alias-label-primary',
     '--dsw-alias-label-secondary',
     '--dsw-alias-label-tertiary',
+    '--dsw-alias-scrollbar-bg-l1',
+    '--dsw-alias-scrollbar-bg-l2',
+    '--dsw-alias-scrollbar-hover-l1',
     '--dsw-alias-state-error-primary',
     '--dsw-alias-state-idle-primary',
     '--dsw-alias-state-success-primary',
@@ -1035,9 +1497,12 @@ test('the pass-2 stylesheet rules are authored, and the states they style are re
   // custom properties, so there is no computed style to assert against. What a test can check
   // besides the declaration is that the states exist to be styled at all — an authored rule for a
   // class the panel never renders is dead in a second way, and this is that half.
-  // B1: pressed is a tint plus weight, and never the brand token as a background.
-  assert.match(styles, /\.kb-btn\[aria-pressed="true"\] \{[^}]*background: var\(--dsw-alias-bg-layer-2/);
-  assert.match(styles, /\.kb-btn\[aria-pressed="true"\] \{[^}]*font-weight: 600/);
+  // B1: pressed is a tint plus weight, and never the brand token as a background. An open disclosure
+  // takes the same treatment (P3.8), so the selector list is shared and both halves are asserted.
+  assert.match(styles, /\.kb-btn\[aria-pressed="true"\], \.kb-more\[aria-expanded="true"\] \{[^}]*background: var\(--dsw-alias-bg-layer-2/);
+  assert.match(styles, /\.kb-btn\[aria-pressed="true"\], \.kb-more\[aria-expanded="true"\] \{[^}]*font-weight: 600/);
+  assert.match(styles, /\.kb-more-caret \{[^}]*transition: transform 140ms ease-out/);
+  assert.match(styles, /\.kb-more\[aria-expanded="true"\] \.kb-more-caret \{ transform: rotate\(90deg\); \}/);
   // B6: the drawer is capped in pixels and the lanes keep a floor.
   assert.match(styles, /\.kb-drawer \{[^}]*max-height: 260px/);
   assert.match(styles, /\.kb-lanes \{[^}]*min-height: 140px/);
