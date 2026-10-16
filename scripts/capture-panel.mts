@@ -14,7 +14,19 @@
  * - the stylesheet is the panel's own `STYLES` string read out of the built bundle (the harness does
  *   not export it, so the template literal is scanned directly);
  * - the `--dsw-*` tokens are the app's own declarations, extracted from the shipped `app.asar` and
- *   resolved `var()` chain by chain, so the capture does not depend on the app being alive.
+ *   resolved `var()` chain by chain, so the capture does not depend on the app being alive;
+ * - the token block carries the **same selector as the app's own block** (`body` for light,
+ *   `body[data-ds-dark-theme]` for dark) and the dark page sets that marker on `<body>` exactly as
+ *   the app does. A block keyed on something else, with no marker present, made every panel rule
+ *   scoped to the app's dark marker inert in the capture; the `[scoped]` probe below now asserts the
+ *   dark rules resolve to the dark tokens in the dark page and not in the light one.
+ *
+ * Two things it deliberately does **not** model, so nobody reads more into a PNG than is there:
+ *
+ * - the markup is `innerHTML`, so a `<select>` serialises its first option rather than the value it
+ *   is bound to — read a select's state from the code, not from the capture;
+ * - the panel is rendered on its own: the app shell's column layout is not reproduced, so the PNG
+ *   shows the panel's own geometry and not where the shell would put it.
  *
  * Run (through the guard, as every node run must be):
  *   node ~/.dsh/scripts/guard/guard.mjs --limit-mb 2560 -- \
@@ -26,7 +38,9 @@
  * on macOS just to start (measured: 1639 MB with default flags, 1352 MB with the `--disable-*` flags
  * below). That floor is Chrome's, not a leak here — a 1024 MB cap kills the tree before a single
  * screenshot is written, and no Chrome flag tried (including `--single-process`, which never renders)
- * brings it under. The cap still protects the run: a genuine leak would blow far past 2.5 GB.
+ * brings it under. The cap still protects the run: a genuine leak would blow far past 2.5 GB. A full
+ * run — the `[scoped]` probe and four screenshots — measured 1887 MB peak, since each Chrome is
+ * sequential and the guard reports the tree's high-water mark rather than the sum.
  *
  * Nothing is cached and nothing is snapshotted: the bundle, the harness and the asar are read fresh,
  * so the script can be re-run after any client change.
@@ -319,11 +333,35 @@ async function renderMarkup(): Promise<string> {
   return markup;
 }
 
+/**
+ * The dark-scoped rules the capture must show working, and the token each must resolve to.
+ *
+ * These are the rules that shipped dead: they are keyed on `body[data-ds-dark-theme]`, the app's own
+ * marker. If the marker is not on `<body>`, or the injected token block outranks them, the computed
+ * colour is the light one — which is exactly the failure the PNGs alone did not reveal.
+ */
+const SCOPED_PROBES: ReadonlyArray<{ selector: string; light: string; dark: string }> = [
+  { selector: '.kb-age-ageing', light: '--dsw-alias-label-primary', dark: '--dsw-alias-state-warn-primary' },
+  { selector: '.kb-sub', light: '--dsw-alias-label-secondary', dark: '--dsw-alias-label-tertiary' },
+];
+
+/** A resolved hex token as the `rgb(r, g, b)` string `getComputedStyle().color` returns. */
+function cssColor(value: string): string {
+  const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(value.trim());
+  if (hex === null) return value.trim();
+  const digits = hex[1] as string;
+  const full = digits.length === 3 ? digits.replace(/./g, (digit) => digit + digit) : digits;
+  const int = Number.parseInt(full, 16);
+  return `rgb(${(int >> 16) & 0xff}, ${(int >> 8) & 0xff}, ${int & 0xff})`;
+}
+
 function htmlDocument(args: {
   theme: Theme;
   tokens: Map<string, string>;
   styles: string;
   markup: string;
+  /** Add the script that reports computed colours, for the cascade probe (not used for a screenshot). */
+  probe?: boolean;
 }): { html: string; unresolved: string[] } {
   const declarations: string[] = [];
   const unresolved: string[] = [];
@@ -333,14 +371,38 @@ function htmlDocument(args: {
     else declarations.push(`  ${token}: ${value};`);
   }
 
-  // The root token block is `html[data-dsh-theme]` rather than `:root`, so it outranks the panel's own
-  // `:root` geometry rule and applies in both themes without any dependency on the app shell.
+  // The token block uses the **app's own selector**: `body` for light, `body[data-ds-dark-theme]` for
+  // dark, with the dark page carrying that marker on `<body>` exactly as the app does. The first
+  // version keyed it on `html[data-dsh-theme]` and never set the marker, so every panel rule scoped
+  // to the app's dark marker was inert in the capture — the theme came only from the injected values,
+  // and the cascade the app actually has was not modelled at all.
+  const tokenSelector = args.theme === 'dark' ? 'body[data-ds-dark-theme]' : 'body';
+  const bodyMarker = args.theme === 'dark' ? ' data-ds-dark-theme' : '';
+  const probeScript = args.probe
+    ? `
+<script>
+window.addEventListener('DOMContentLoaded', function () {
+  var selectors = ${JSON.stringify(SCOPED_PROBES.map((entry) => entry.selector))};
+  var out = {};
+  for (var i = 0; i < selectors.length; i += 1) {
+    var node = document.querySelector(selectors[i]);
+    out[selectors[i]] = node === null ? null : getComputedStyle(node).color;
+  }
+  var pre = document.createElement('pre');
+  pre.id = 'dsh-capture-probe';
+  pre.textContent = JSON.stringify(out);
+  document.body.appendChild(pre);
+});
+</script>`
+    : '';
+
+  // `data-dsh-theme` stays on `<html>` as a label for the file; no rule keys on it any more.
   const html = `<!doctype html>
 <html data-dsh-theme="${args.theme}">
 <head>
 <meta charset="utf-8" />
 <style>
-html[data-dsh-theme] {
+${tokenSelector} {
 ${declarations.join('\n')}
 }
 * { box-sizing: border-box; }
@@ -351,8 +413,8 @@ body { background: var(--dsw-alias-bg-base, #fff); font-family: ui-sans-serif, -
 ${args.styles}
 </style>
 </head>
-<body>
-<div id="root">${args.markup}</div>
+<body${bodyMarker}>
+<div id="root">${args.markup}</div>${probeScript}
 </body>
 </html>
 `;
@@ -395,6 +457,38 @@ function pngSize(path: string): { width: number; height: number; bytes: number }
   const buffer = readFileSync(path);
   if (buffer.length < 24 || buffer.readUInt32BE(0) !== 0x89504e47) throw new Error(`${path} is not a PNG`);
   return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20), bytes: buffer.length };
+}
+
+/**
+ * Run the probe page and read the computed colours it reported.
+ *
+ * `--dump-dom` executes the page's own script and prints the resulting DOM, so this needs no debug
+ * port and no second process tree beyond one Chrome invocation. A missing `<pre>` means the script
+ * never ran, which is a failure rather than an empty result.
+ */
+function probeComputed(file: string): Record<string, string | null> {
+  const result = spawnSync(
+    CHROME,
+    [
+      '--headless=new',
+      '--disable-gpu',
+      '--disable-extensions',
+      '--disable-sync',
+      '--disable-default-apps',
+      '--disable-component-update',
+      '--disable-background-networking',
+      '--virtual-time-budget=3000',
+      '--dump-dom',
+      `file://${file}`,
+    ],
+    { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }
+  );
+  if (result.status !== 0) {
+    throw new Error(`the computed-style probe exited ${String(result.status)}: ${(result.stderr ?? '').split('\n').slice(-3).join(' ')}`);
+  }
+  const match = /<pre id="dsh-capture-probe">([^<]*)<\/pre>/.exec(result.stdout ?? '');
+  if (match === null) throw new Error(`the computed-style probe did not run in ${file}`);
+  return JSON.parse(match[1] as string) as Record<string, string | null>;
 }
 
 
@@ -447,6 +541,27 @@ async function main(): Promise<void> {
     const htmlPath = join(TEMP_DIR, `panel-${theme}.html`);
     writeFileSync(htmlPath, document.html, 'utf8');
 
+    // Prove the marker reached `<body>` and the panel's dark-scoped rules are live: the same document
+    // plus a script that reports the computed colour of two rules keyed on the app's dark marker.
+    // In light each must resolve to a light token; in dark, to a different dark token. A dead marker
+    // or a token block that outranked the panel's own rules makes the two themes agree, and this
+    // throws instead of writing a dark PNG that is really light.
+    const probePath = join(TEMP_DIR, `panel-${theme}-probe.html`);
+    writeFileSync(probePath, htmlDocument({ theme, tokens: themeTokens, styles, markup, probe: true }).html, 'utf8');
+    const computed = probeComputed(probePath);
+    for (const entry of SCOPED_PROBES) {
+      const expected = resolve(theme === 'dark' ? entry.dark : entry.light, themeTokens);
+      if (expected === null) throw new Error(`cannot resolve the ${theme} token for ${entry.selector}`);
+      const expectedCss = cssColor(expected);
+      const actual = computed[entry.selector];
+      if (actual !== expectedCss) {
+        throw new Error(
+          `${theme}: ${entry.selector} computed ${String(actual)}, expected ${expectedCss} from ${theme === 'dark' ? entry.dark : entry.light} — the dark marker is not scoping the capture`
+        );
+      }
+      console.log(`[scoped] ${theme.padEnd(5)} ${entry.selector} -> ${String(actual)} (${theme === 'dark' ? entry.dark : entry.light})`);
+    }
+
     for (const { width, height } of SIZES) {
       const out = join(OUT_DIR, `capture-${theme}-${String(width)}.png`);
       screenshot(htmlPath, out, width, height);
@@ -459,7 +574,7 @@ async function main(): Promise<void> {
     }
   }
 
-  console.log(`\n[html] ${TEMP_DIR}/panel-<theme>.html`);
+  console.log(`\n[html] ${TEMP_DIR}/panel-<theme>.html (and panel-<theme>-probe.html for the [scoped] check)`);
   for (const line of written) console.log(`[png ] ${line}`);
   console.log(`\n[summary] ${String(written.length)} PNGs written`);
   for (const line of written) console.log(`  ${line}`);

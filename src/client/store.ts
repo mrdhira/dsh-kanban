@@ -54,7 +54,11 @@ export interface BoardState {
  * the panel's Exception control all pass through `checkMoveLocally` and the host's `checkMove`.
  */
 export interface MoveOptions {
-  /** Except a gate. The host records the exception on the card; the reason is required. */
+  /**
+   * Ask to except a gate. This is a *request*, not a forwarded flag: `move` sends `force` only when
+   * the ordinary gates refuse the move and the exception allows it, so the host records a
+   * `GateException` only for a gate that was actually excepted. The reason is required.
+   */
   readonly force?: boolean;
   /** Required when dropping, reopening a finished card, or forcing a move. */
   readonly reason?: string;
@@ -229,20 +233,26 @@ export function createBoardStore(transport: BoardTransport, options: BoardStoreO
       const task = payload.tasks.find((entry) => entry.id === id);
       if (task === undefined) return;
 
-      const force = options?.force === true;
       const reason = options?.reason;
-      // The same order the host checks in: the exception first, so the panel's verdict agrees with
-      // the refusal the host would send back.
-      const verdict = checkMoveLocally({
-        payload,
-        task,
-        toState,
-        ...(force ? { force: true } : {}),
-        ...(reason === undefined ? {} : { reason }),
-      });
-      if (!verdict.ok) {
-        set({ notice: refusalNotice(new Refusal(422, 'policy', verdict.reason, verdict.missing ?? [])) });
-        return;
+      const withReason = reason === undefined ? {} : { reason };
+      // Evaluate the ordinary gates first. A move they already allow is **not** an exception, even
+      // when the human reached it through the Exception control: `done → x` passes `policy.checkMove`
+      // on the reason alone, so forwarding `force` blindly made every panel reopen append a
+      // `GateException` and an `exception` event that the same `kanban_move` never writes — and that
+      // log is what the four flow metrics and "recomputable from the log" rest on.
+      const plain = checkMoveLocally({ payload, task, toState, ...withReason });
+      const forced =
+        options?.force === true ? checkMoveLocally({ payload, task, toState, force: true, ...withReason }) : null;
+      // Only a move the ordinary gates refuse *and* the exception allows is an exception to send.
+      const exception = forced !== null && forced.ok && !plain.ok;
+      if (!exception) {
+        // When an exception was asked for and even that would be refused, its message ("an exception
+        // needs a written reason") is the more useful of the two.
+        const refusal = plain.ok ? plain : (forced ?? plain);
+        if (!refusal.ok) {
+          set({ notice: refusalNotice(new Refusal(422, 'policy', refusal.reason, refusal.missing ?? [])) });
+          return;
+        }
       }
 
       const target = filterCards(payload.tasks, { state: [toState] }).filter((entry) => entry.id !== id);
@@ -258,8 +268,8 @@ export function createBoardStore(transport: BoardTransport, options: BoardStoreO
           toState,
           toPosition: position,
           expectedRev: task.rev,
-          ...(force ? { force: true } : {}),
-          ...(reason === undefined ? {} : { reason }),
+          ...(exception ? { force: true } : {}),
+          ...withReason,
         },
         () => applyLocalMove(payload, id, toState, position, now().toISOString())
       );

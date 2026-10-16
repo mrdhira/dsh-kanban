@@ -29,6 +29,7 @@ import {
   type MountedView,
 } from './harness.ts';
 import { resolveOrigin } from '../lib/v1/client/api.js';
+import { checkMoveLocally, sameFilter } from '../lib/v1/client/model.js';
 
 const FULL_DOR = Object.fromEntries(
   ['outcome', 'acceptance', 'write-scope', 'estimate'].map((id) => [id, { at: '2026-10-01T00:00:00.000Z', by: 'human:dhira' }])
@@ -426,6 +427,54 @@ test('a state chip narrows the board, presses itself, and releases on a second c
   view.unmount();
 });
 
+test('sameFilter ignores the order of a filter array, and nothing else', () => {
+  // The arrays a filter carries are sets. `['done','ready']` and `['ready','done']` are the same
+  // question, and comparing them verbatim is what left a saved view's button unpressed.
+  assert.equal(sameFilter({ state: ['done', 'ready'] }, { state: ['ready', 'done'] }), true);
+  assert.equal(sameFilter({ priority: ['p3-low', 'p0-critical'] }, { priority: ['p0-critical', 'p3-low'] }), true);
+  assert.equal(sameFilter({ state: ['done', 'ready'], priority: ['p1-high', 'p2-normal'] }, { priority: ['p2-normal', 'p1-high'], state: ['ready', 'done'] }), true);
+  // Order-insensitivity must not collapse genuinely different filters.
+  assert.equal(sameFilter({ state: ['done', 'ready'] }, { state: ['done'] }), false, 'a different set is different');
+  assert.equal(sameFilter({ state: ['done'] }, { state: ['done', 'done'] }), false, 'a multiset is not a set');
+  assert.equal(sameFilter({ state: ['done', 'ready'] }, { state: ['done', 'ready'], blocked: true }), false);
+  assert.equal(sameFilter({ search: 'x' }, { search: 'y' }), false);
+  assert.equal(sameFilter({ sprintId: null }, { sprintId: 's-1' }), false, 'null is a question, not an absence');
+  assert.equal(sameFilter({}, { blocked: undefined }), true, 'an undefined field is no field');
+});
+
+test('a forced move to the same state still needs its reason, as the host requires', () => {
+  // `policy.checkMove` validates the exception's reason *before* it returns pass on a same-state move,
+  // and the local pre-check now does the same. It used to wave the forced same-state move through,
+  // which was one more way the two orders differed; this pins the order that remains.
+  const payload = boardPayload() as unknown as Parameters<typeof checkMoveLocally>[0]['payload'];
+  const task = (payload.tasks as readonly Parameters<typeof checkMoveLocally>[0]['task'][]).find(
+    (entry) => entry.id === 'T-003'
+  );
+  assert.ok(task !== undefined);
+  assert.deepEqual(checkMoveLocally({ payload, task, toState: 'in-progress' }), { ok: true }, 'same state is a no-op');
+  const forced = checkMoveLocally({ payload, task, toState: 'in-progress', force: true });
+  assert.equal(forced.ok, false, 'but an exception still owes a written reason');
+});
+
+test('a saved view stays pressed when the same states are chosen in another order', async () => {
+  // The chips append in board order, so they build `['ready','done']` while the view below was saved
+  // as `['done','ready']`. Before `sameFilter` sorted the arrays, the view's button read
+  // `aria-pressed="false"` and the toolbar highlighted nothing while showing exactly that board.
+  const view = await mountBoard(loadBundle(), {
+    ...fixture(),
+    views: [{ id: 'v-rev', name: 'Reverse', description: 'done and ready, listed the other way', filter: { state: ['done', 'ready'] } }],
+  });
+
+  await view.click('[data-state="ready"]');
+  await flush();
+  await view.click('[data-state="done"]');
+  await flush();
+
+  const pressed = view.findAll('nav[aria-label="Views"] .kb-btn[aria-pressed="true"]').map((node) => node.textContent);
+  assert.deepEqual(pressed, ['Reverse'], 'the same set of states, whatever order it was built in');
+  view.unmount();
+});
+
 test('the stylesheet is injected once under its id, and removed with the panel', async () => {
   const first = await mountBoard(loadBundle());
   const styleId = 'dsh-kanban-styles';
@@ -445,16 +494,71 @@ test('the stylesheet is injected once under its id, and removed with the panel',
   second.unmount();
 });
 
+/**
+ * Every one-sided border declaration whose width is neither `0` nor exactly `1px`.
+ *
+ * The ban is on the "side-tab" tell — a thick stripe down one edge — and here the source text **is**
+ * the contract: what is forbidden is *authoring* the declaration, whether or not it later wins the
+ * cascade. The first version, `(?!0|1(?:px)?\b)\d`, let `1.5px` through because `1\b` matches
+ * between the `1` and the `.`; this one anchors the value instead.
+ */
+function oneSidedBorderWidths(styles: string): string[] {
+  return [...styles.matchAll(/border-(?:left|right)(?:-width)?:\s*([^;\n}]+)/g)]
+    .map((match) => (match[1] ?? '').trim())
+    .filter((value) => !/^(?:0|1px)(?![\d.])/.test(value));
+}
+
+/**
+ * Every `body[data-ds-dark-theme]` rule, once its selector list is proved well-formed.
+ *
+ * A comment inside a selector list is not a comment to a CSS parser: the dangling selector before it
+ * chains onto the next one, so `body[data-ds-dark-theme] <comment> body[data-ds-dark-theme] .kb-sub`
+ * parses as the descendant selector `body[data-ds-dark-theme] body[data-ds-dark-theme] .kb-sub`,
+ * which matches nothing. That is how the dark block shipped dead, and the old positive assertion —
+ * a literal search for the marker — stayed green over it. This parses the list and rejects both the
+ * comment that splits it and the chained marker it produces.
+ */
+function darkScopedRules(styles: string): string[] {
+  const marker = 'body[data-ds-dark-theme]';
+  const rules = [...styles.matchAll(/[^{}]+\{[^{}]*\}/g)].map((match) => match[0]);
+  const dark = rules.filter((rule) => rule.slice(0, rule.indexOf('{')).includes(marker));
+  for (const rule of dark) {
+    const raw = rule.slice(0, rule.indexOf('{'));
+    // A legitimate comment may *precede* a rule; only a comment after the first marker sits inside
+    // the selector list. Starting at the marker is what tells those two apart without a CSS parser.
+    const list = raw.slice(raw.indexOf(marker));
+    assert.equal(
+      list.includes('/*'),
+      false,
+      `a comment inside a dark selector list chains it onto the next selector: ${list.trim()}`
+    );
+    for (const selector of list.split(',')) {
+      const trimmed = selector.trim();
+      assert.equal(trimmed.startsWith(`${marker} `), true, `a dark selector must scope from the body marker: ${trimmed}`);
+      assert.equal(trimmed.split(marker).length, 2, `a dark selector may name the marker once, not chain it: ${trimmed}`);
+    }
+  }
+  return dark;
+}
+
 test('no craft-floor side stripe survives in the stylesheet', () => {
   // The detector flagged `border-left-width: 3px` on the notice strip as the "side-tab" tell. The
   // state signal those stripes carried is now a 1px border in the state colour, next to content
   // that already names the state — so this is a ban on re-adding the stripe, not on the colour.
   const styles = readFileSync(new URL('../src/client/styles.ts', import.meta.url), 'utf8');
-  assert.equal(/border-(?:left|right)(?:-width)?:\s*(?!0|1(?:px)?\b)\d/.test(styles), false, 'no thick one-sided border');
+  assert.deepEqual(oneSidedBorderWidths(styles), [], 'no thick one-sided border');
   assert.match(styles, /\.kb-notice-refusal \{ border-color: var\(--dsw-alias-state-error-primary/);
   assert.match(styles, /\.kb-card-expedite \{ border-color: var\(--dsw-alias-state-error-primary/);
   assert.match(styles, /\.kb-card-blocked \{ border-color: var\(--dsw-alias-state-warn-primary/);
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/, 'the motion added is switchable off');
+});
+
+test('the side-stripe detector rejects 1.5px, which the old regex let through', () => {
+  // The detector has to be able to fail: `1.5px` slipped past `(?!0|1(?:px)?\b)\d`. Both directions
+  // of the tightened rule are pinned here, so a future loosening fails a named case.
+  assert.deepEqual(oneSidedBorderWidths('border-left: 3px solid red; border-right-width: 1.5px;'), ['3px solid red', '1.5px']);
+  assert.deepEqual(oneSidedBorderWidths('border-left: 0.5px; border-right: 2rem;'), ['0.5px', '2rem']);
+  assert.deepEqual(oneSidedBorderWidths('border-left: 0; border-left: 1px solid var(--x, #333);'), []);
 });
 
 test('a partly-read board says so on screen', async () => {
@@ -478,6 +582,13 @@ test('every CSS variable the panel uses is a theme token the app actually provid
   // (`app.asar`, both themes: `#81858c` light / `#adb2b8` dark), because the live inspect query was
   // unavailable when the contrast pass needed it. It is the dimmest *label* role, which is what a
   // timestamp, a placeholder and a lane count are.
+  //
+  // The source text **is** the contract here, deliberately: the question is which *names* the app's
+  // theme provides, and that is a fact about the app, not about this run. jsdom resolves no custom
+  // properties and the app is not running in this process, so a behavioural check ("does it look
+  // right?") is not available; the built bundle's `var()` references against this transcribed list
+  // is the only honest check. What it cannot see is a rule that names a real token but loses the
+  // cascade — that is what the dark-block parse and the capture are for.
   const THEME_TOKENS = new Set([
     '--dsw-alias-bg-base',
     '--dsw-alias-bg-layer-1',
@@ -597,6 +708,30 @@ test('A3: Done is refused locally, then force carries a written reason through t
   view.unmount();
 });
 
+test('A3: reopening a Done card through the exception control sends the reason and no force', async () => {
+  const view = await mountBoard(loadBundle());
+  await view.click('[data-card="T-005"]');
+  await flush();
+
+  await view.click('[data-action="exception"]');
+  await flush();
+  await view.type('[data-select="exception-target"]', 'ready');
+  await view.type('[data-field="exception-reason"]', 'the acceptance line changed, so it goes back');
+  await flush();
+  await view.click('[data-action="except"]');
+  await flush();
+
+  const body = lastMutation()?.body as Record<string, unknown> | undefined;
+  assert.equal(body?.op, 'move');
+  assert.equal(body?.toState, 'ready');
+  assert.equal(body?.reason, 'the acceptance line changed, so it goes back');
+  // `done → ready` passes `policy.checkMove` on the reason alone, so no gate was excepted. Sending
+  // `force` anyway would append a `GateException` and an `exception` event that the same
+  // `kanban_move` never writes, inflating the log the flow metrics are recomputed from.
+  assert.equal(body?.force, undefined, 'a reopen is not a gate exception');
+  view.unmount();
+});
+
 test('A3: a forced move the host refuses still shows the message and the missing list', async () => {
   const payload = fixture();
   setFetch((call) => {
@@ -644,6 +779,8 @@ test('B3: amber carries a word as well as a colour', async () => {
   const old = view.find('[data-card="T-005"]')?.textContent ?? '';
   assert.match(old, /3\.5d/);
   assert.match(old, /ageing/, 'the age band is a word, not only a colour');
+  // The no-wrap declaration is CSS, and the source text is the contract for it (jsdom computes no
+  // layout); the *effect* it protects is asserted above, on the rendered text of the card.
   const styles = readFileSync(new URL('../src/client/styles.ts', import.meta.url), 'utf8');
   assert.match(styles, /\.kb-card-top \{ display: flex; gap: 7px; align-items: baseline; flex-wrap: nowrap; \}/);
   assert.match(styles, /\.kb-card-top > \* \{ white-space: nowrap; \}/);
@@ -754,8 +891,12 @@ test('C9: the drawer separates Move, Block and Drop, and exposes the position nu
   view.unmount();
 });
 
-test('the pass-2 stylesheet rules are authored, not assumed', () => {
+test('the pass-2 stylesheet rules are authored, and the states they style are rendered', async () => {
   const styles = readFileSync(new URL('../src/client/styles.ts', import.meta.url), 'utf8');
+  // These are declarations, so the source text is the contract for *appearance*: jsdom resolves no
+  // custom properties, so there is no computed style to assert against. What a test can check
+  // besides the declaration is that the states exist to be styled at all — an authored rule for a
+  // class the panel never renders is dead in a second way, and this is that half.
   // B1: pressed is a tint plus weight, and never the brand token as a background.
   assert.match(styles, /\.kb-btn\[aria-pressed="true"\] \{[^}]*background: var\(--dsw-alias-bg-layer-2/);
   assert.match(styles, /\.kb-btn\[aria-pressed="true"\] \{[^}]*font-weight: 600/);
@@ -769,6 +910,21 @@ test('the pass-2 stylesheet rules are authored, not assumed', () => {
   // C8: the rail and the state that opens it.
   assert.match(styles, /\.kb-lane-empty \{[^}]*flex: 0 0 46px/);
   assert.match(styles, /\.kb-lane-awake \{[^}]*flex: 0 0 var\(--kb-lane-width/);
+
+  // The behavioural half: the panel really reaches the classes those rules name. `.kb-lane-empty`
+  // is the review lane (zero cards), `.kb-lane-awake` is what a live drag adds, pressed and the
+  // drawer are the states B1/B6 style, and the drop-target class is reached by a drag onto a lane.
+  const view = await mountBoard(loadBundle());
+  assert.equal(view.has('.kb-lanes'), true);
+  assert.equal(view.find('[data-lane="review"]')?.className.includes('kb-lane-empty'), true);
+  await view.dragStart('[data-card="T-002"]');
+  await flush();
+  assert.equal(view.find('[data-lane="review"]')?.className.includes('kb-lane-awake'), true);
+  assert.equal(view.has('.kb-btn[aria-pressed="true"]'), true);
+  await view.click('[data-card="T-003"]');
+  await flush();
+  assert.equal(view.has('.kb-drawer'), true);
+  view.unmount();
 });
 
 test('the store reports the document origin, because same-origin is the whole diagnosis', () => {
@@ -814,7 +970,34 @@ test('no colour that fails AA on light carries text there', () => {
   });
   assert.deepEqual(offenders, [], 'a colour that fails AA on light may not carry text outside the dark scope');
 
-  // And the positive half: the dark scope really does restore them, so the enhancement is not lost.
-  assert.match(styles, /body\[data-ds-dark-theme\] \.kb-pri-p1/);
-  assert.match(styles, /body\[data-ds-dark-theme\] \.kb-sub/);
+  // And the positive half, proved structurally rather than by looking for the marker string: every
+  // dark rule must be a real, well-formed selector list, and the classes it restores must be on one.
+  // The literal search this replaces stayed green over a dark block that parsed to nothing.
+  const dark = darkScopedRules(styles);
+  assert.ok(dark.length >= 2, 'both dark blocks are still authored');
+  const restored = dark.join('\n');
+  for (const cls of ['.kb-pri-p1', '.kb-age-ageing', '.kb-check-missing', '.kb-sub', '.kb-input::placeholder', '.kb-empty']) {
+    assert.ok(restored.includes(cls), `${cls} is restored in dark`);
+  }
+});
+
+test('the dark-block detector fails on the pre-fix, comment-split selector list', () => {
+  // The rule that caught this shipped dead: a dangling `body[data-ds-dark-theme]` before a comment
+  // made one selector chain onto the next, and the old literal-marker assertion could not see it.
+  // This reproduces that exact shape so the detector is proved to have teeth in-repo.
+  const preFix = [
+    '.kb-pri-p1 { color: var(--dsw-alias-label-primary, inherit); }',
+    'body[data-ds-dark-theme] .kb-pri-p1,',
+    'body[data-ds-dark-theme] .kb-age-ageing,',
+    'body[data-ds-dark-theme] ',
+    '/* the comment that split the selector list */',
+    'body[data-ds-dark-theme] .kb-sub { color: var(--dsw-alias-label-tertiary, #81858c); }',
+  ].join('\n');
+  assert.throws(() => darkScopedRules(preFix), /comment inside a dark selector list/);
+  // A well-formed list of the same shape passes, so the detector rejects the split and not the scope.
+  const fixed = [
+    'body[data-ds-dark-theme] .kb-pri-p1,',
+    'body[data-ds-dark-theme] .kb-age-ageing { color: var(--dsw-alias-state-warn-primary, #d68945); }',
+  ].join('\n');
+  assert.equal(darkScopedRules(fixed).length, 1);
 });

@@ -132,8 +132,11 @@ input[type="number"].kb-input { min-width: 76px; }
 .kb-pri-p1, .kb-age-ageing, .kb-check-missing { color: var(--dsw-alias-label-primary, inherit); }
 body[data-ds-dark-theme] .kb-pri-p1,
 body[data-ds-dark-theme] .kb-age-ageing,
-body[data-ds-dark-theme] 
-/* The same split for the de-emphasised tier: tertiary is 8.54:1 in dark but only 3.71:1 in light. */
+body[data-ds-dark-theme] .kb-check-missing { color: var(--dsw-alias-state-warn-primary, #d68945); }
+
+/* The same split for the de-emphasised tier: tertiary is 8.54:1 in dark but only 3.71:1 in light.
+   A comment must never sit inside a selector list: a dangling selector before one makes the whole
+   rule a descendant chain that matches nothing, which is exactly how this block shipped dead. */
 body[data-ds-dark-theme] .kb-sub,
 body[data-ds-dark-theme] .kb-input::placeholder,
 body[data-ds-dark-theme] .kb-empty { color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary, rgba(128,128,128,0.9))); }

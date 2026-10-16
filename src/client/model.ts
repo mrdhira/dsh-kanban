@@ -228,10 +228,19 @@ export function missingChecks(task: Task, dow: DefinitionOfWorkflow, gate: 'dor'
 /**
  * Would the host accept this move? Asked before sending, so the refusal is instantaneous.
  *
- * Kept in the same order as `policy.checkMove` on the host: the human's exception, the DoR gate,
- * the DoD gate, the drop reason, the blocked ban, then WIP. If the two ever disagree the host wins
- * and the panel shows the host's message — which is why the wording here is short and the host's is
- * authoritative.
+ * This is **not** a copy of `policy.checkMove`; it is a best-effort pre-check and the host is
+ * authoritative on every disagreement. Two differences remain, and both fail open — the panel sends
+ * the move, the host refuses it, and the host's message is what the human reads:
+ *
+ * 1. There is no human-only check on `force`. The browser cannot know which actor the host will
+ *    attribute the call to, so `policy.checkMove` is what declines an agent's exception.
+ * 2. WIP is counted from the panel's snapshot rather than inside the write transaction, so a limit
+ *    that filled up since the last poll is seen by the host and not here.
+ *
+ * Everything it *can* mirror, it mirrors: the exception's reason is required before a same-state
+ * move is waved through (as the host requires it), and the remaining gates run in the host's order —
+ * the exception, the Definition of Ready, the Definition of Done, the drop/reopen reason, the
+ * blocker, then WIP. The wording here is deliberately short; the host's is the authoritative one.
  */
 export function checkMoveLocally(input: {
   readonly payload: BoardPayload;
@@ -241,13 +250,18 @@ export function checkMoveLocally(input: {
   readonly reason?: string;
 }): LocalVerdict {
   const { payload, task, toState } = input;
+  const forcing = input.force === true;
+
+  // The exception first, in the host's order: a forced move needs a written reason before anything
+  // else is considered — including a same-state move, which `policy.checkMove` only passes after
+  // the reason has been validated.
+  if (forcing && (input.reason === undefined || input.reason.trim().length === 0)) {
+    return { ok: false, reason: 'an exception needs a written reason' };
+  }
+
   if (task.state === toState) return { ok: true };
 
-  if (input.force === true) {
-    if (input.reason === undefined || input.reason.trim().length === 0) {
-      return { ok: false, reason: 'an exception needs a written reason' };
-    }
-  } else if (task.state === 'backlog' && toState !== 'dropped') {
+  if (!forcing && task.state === 'backlog' && toState !== 'dropped') {
     const missing = missingChecks(task, payload.dow, 'dor');
     if (missing.length > 0) {
       return {
@@ -258,7 +272,7 @@ export function checkMoveLocally(input: {
     }
   }
 
-  if (input.force !== true && toState === 'done') {
+  if (!forcing && toState === 'done') {
     const missing = missingChecks(task, payload.dow, 'dod');
     if (missing.length > 0) {
       return {
@@ -278,7 +292,7 @@ export function checkMoveLocally(input: {
   if (task.blockedReason !== null && (WIP_STATES as readonly string[]).includes(toState)) {
     return { ok: false, reason: `blocked: ${task.blockedReason}` };
   }
-  if (input.force !== true && task.classOfService !== 'expedite') {
+  if (!forcing && task.classOfService !== 'expedite') {
     const limit = limitFor(toState, payload.dow);
     if (limit !== undefined) {
       const occupied = filterCards(payload.tasks, { state: [toState] }).length;
@@ -336,14 +350,19 @@ export function hasFilter(filter: ViewFilter): boolean {
  *
  * The toolbar needs this to say which view is current: a saved view stores the filter object and
  * the store holds another copy of it, so identity comparison would mark every view inactive the
- * moment it was clicked. Canonicalised as sorted `key=JSON` pairs, which is stable for the arrays
- * a filter can carry (`state`, `priority`) as well as its scalars.
+ * moment it was clicked. Canonicalised as sorted `key=value` pairs.
+ *
+ * An array value is **sorted before it is serialised**, because the same question can be asked in a
+ * different order: a view saved as `['done','ready']` and the chips that append `['ready','done']`
+ * are the same filter, and comparing the arrays verbatim left the saved view's button unpressed and
+ * the toolbar highlighting nothing. The two arrays a filter can carry (`state`, `priority`) are
+ * sets, so their order is not part of the question.
  */
 export function sameFilter(a: ViewFilter, b: ViewFilter): boolean {
   const canonical = (filter: ViewFilter): string =>
     Object.entries(filter)
       .filter(([, value]) => value !== undefined)
-      .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
+      .map(([key, value]) => `${key}=${JSON.stringify(Array.isArray(value) ? [...value].sort() : value)}`)
       .sort()
       .join('&');
   return canonical(a) === canonical(b);
