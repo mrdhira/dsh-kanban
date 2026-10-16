@@ -802,6 +802,60 @@ test('P2.3: a write sets the store’s busy flag and a settled write clears it',
   assert.equal(store.getSnapshot().busy, false, 'and clears it when the host answers');
 });
 
+test('P2.3: a poll that lands mid-write ends neither the busy mark nor the optimistic card', async () => {
+  // The race the two cases above keep apart, run deliberately. A write is in flight and the timer's
+  // own read answers before the host has spoken; that read is not the write's answer, so it must not
+  // clear `busy` — which switches the `kb-lanes-busy` treatment off early — and must not put the
+  // polled board back over the optimistic payload, which is how a card the human just moved snaps
+  // back. The polled answer carries a **changed** board (an external writer moved the revision on)
+  // with T-003 still where the human found it: that external change is what makes the payload half
+  // bite, while the `busy` half needs no second writer at all.
+  const initial = boardPayload();
+  // Where the poll finds the board: another writer moved `rev` on, and T-003 is still in progress.
+  const polled = boardPayload({ rev: 8, title: 'Board, moved elsewhere' });
+  // Where the write's own read finds it: T-003 in review, which is where the optimistic move put it.
+  const settled = boardPayload({
+    rev: 8,
+    tasks: (initial.tasks as Record<string, unknown>[]).map((task) =>
+      task.id === 'T-003' ? { ...task, state: 'review', position: 0 } : task
+    ),
+  });
+  let serverBoard = initial;
+  let settleMutation: (outcome: unknown) => void = () => {};
+  const mutation = new Promise((resolve) => {
+    settleMutation = resolve;
+  });
+  const transport = {
+    origin: { origin: 'http://localhost', source: 'test', detail: '', document: { protocol: 'http:', origin: 'http://localhost', baseURI: 'http://localhost/' } },
+    board: async () => ({ changed: true, payload: serverBoard as never }),
+    task: async () => ({ task: null, comments: [], events: [] }) as never,
+    mutate: async () => mutation as never,
+    health: async () => ({}),
+  };
+  const store = createBoardStore(transport as never);
+  const stateOf = (id: string): string | undefined =>
+    store.getSnapshot().payload?.tasks.find((task) => task.id === id)?.state;
+
+  await store.refresh(true); // the first payload, with T-003 in progress
+  assert.equal(store.getSnapshot().busy, false);
+
+  serverBoard = polled; // the timer's read will answer with a changed board
+  const move = store.move('T-003', 'review');
+  assert.equal(store.getSnapshot().busy, true, 'a write sets the mark before it awaits the host');
+  assert.equal(stateOf('T-003'), 'review', 'and the card lands in review optimistically');
+
+  // The timer's own path — `refresh(false)` — answered while `transport.mutate` is still in flight.
+  await store.refresh(false);
+  assert.equal(store.getSnapshot().busy, true, 'a poll mid-write must not end the write’s busy mark');
+  assert.equal(stateOf('T-003'), 'review', 'nor put the polled board over the optimistic card');
+
+  serverBoard = settled; // the host has answered; the write's own read now finds the truth
+  settleMutation({ rev: 8, result: {} });
+  await move;
+  assert.equal(store.getSnapshot().busy, false, 'the write’s own read ends the mark');
+  assert.equal(stateOf('T-003'), 'review', 'and the stored board is the host’s');
+});
+
 // ------------------------------------------------------------------ P2.4 error is a state
 
 test('P2.4: an unreachable board is a state with a recovery, not only a sentence', async () => {

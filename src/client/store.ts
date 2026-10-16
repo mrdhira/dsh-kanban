@@ -136,17 +136,26 @@ export function createBoardStore(transport: BoardTransport, options: BoardStoreO
     const since = force ? undefined : state.payload?.rev;
     try {
       const answer = await transport.board(since);
+      // The **answer** decides, not the call: the timer's read is not the write's read, so when one
+      // lands while `busy` is set it must neither end the write's pending treatment nor put the
+      // board-as-of-that-read back over the optimistic payload — that is how a card the human just
+      // moved snapped back. Only a caller that already owns the read (`force`) is let through: the
+      // header's Refresh, `start`'s first read, and the write's own read after the host answers.
+      // Overwriting the optimistic payload needs a concurrent *external* change to the same board to
+      // be visible, so that half is a risk; the `busy` half needs no second writer.
+      if (state.busy && !force) return;
       if (!answer.changed || answer.payload === undefined) {
         // Nothing moved: keep the identical snapshot so React does no work.
         if (state.status !== 'ready' && state.payload !== null) set({ status: 'ready' });
         return;
       }
-      set({ status: 'ready', payload: answer.payload, lastError: null, busy: false });
+      set({ status: 'ready', payload: answer.payload, lastError: null });
     } catch (error) {
+      // `busy` is not cleared here either: it belongs to the write that set it, and that write clears
+      // it when the host answers. A poll that failed mid-write is not that answer.
       set({
         status: state.payload === null ? 'error' : 'ready',
         lastError: error instanceof Error ? error.message : String(error),
-        busy: false,
       });
     }
   }
