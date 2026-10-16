@@ -32,7 +32,7 @@ export const STYLES = `
    answers that by writing scrollbar-color as "thumb, transparent", and its own -webkit track rule is
    "background: 0 0". The panel now writes both halves the same way, so the thumb is measured against
    the surface it actually sits on (the lane or the drawer) instead of against a same-valued fill:
-   1.00:1 -> 1.17:1 in light, and 3.50:1 in dark where the two tokens do differ. The thumb's own
+   1.26:1 in light (the ladder's `-hover` step is 1.17:1), and 1.43:1 in dark. The thumb's own
    fallback is --kb-label-secondary, this sheet's "visible de-emphasised mark", so a missing ladder
    still produces a visible thumb (5.80:1 light) rather than a track-coloured one. */
 .kb-lanes, .kb-drawer { scrollbar-width: thin;

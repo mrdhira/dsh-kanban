@@ -915,7 +915,14 @@ test('P2.5: a disabled control reads as disabled, and never keeps a chosen look'
   assert.equal(styles.includes('.kb-btn:disabled { opacity'), false, 'the element opacity is gone');
   // No other selector dims text with an element opacity either -- this is the panel's systemic AA
   // failure, so the check is over the whole sheet rather than over the one rule that was reported.
-  const dimmed = [...styles.matchAll(/([^{}]+)\{[^{}]*opacity:\s*0?\.[0-9]+/g)].map((match) => (match[1] as string).trim());
+  // Strip comments first: the sheet explains *why* element opacity was removed, and prose that names
+  // the defect must not read as the defect. What is checked is what a browser would apply.
+  const rules = styles.replace(/\/\*[\s\S]*?\*\//g, '');
+  // Capture the value and compare it in code: a lookahead here is defeated by backtracking, because
+  // `\s*` can give back one character and then the negative lookahead succeeds against the space.
+  const dimmed = [...rules.matchAll(/([^{}]+)\{[^{}]*opacity:\s*([^;}]+)/g)]
+    .filter((match) => (match[2] as string).trim() !== '1')
+    .map((match) => (match[1] as string).trim());
   assert.deepEqual(dimmed, [], 'no rule dims a box with an element opacity');
   assert.match(styles, /\.kb-btn\[aria-pressed="true"\]:disabled \{ background: transparent; border-color: var\(--dsw-alias-border-l1/);
   // A placeholder is dimmed by the *UA* at ~0.54 on top of the author's colour, so the author has to
@@ -1709,7 +1716,14 @@ test('V3: no element opacity is used to de-emphasise text — the label tokens a
   // three were element opacities in this sheet; the third is the UA's, and it is answered where it is
   // written. The walk is over the sheet, so a fourth cannot be added without failing here.
   const styles = readFileSync(new URL('../src/client/styles.ts', import.meta.url), 'utf8');
-  const dimmed = [...styles.matchAll(/([^{}]+)\{[^{}]*opacity:\s*0?\.[0-9]+/g)].map((match) => (match[1] as string).trim());
+  // Strip comments first: the sheet explains *why* element opacity was removed, and prose that names
+  // the defect must not read as the defect. What is checked is what a browser would apply.
+  const rules = styles.replace(/\/\*[\s\S]*?\*\//g, '');
+  // Capture the value and compare it in code: a lookahead here is defeated by backtracking, because
+  // `\s*` can give back one character and then the negative lookahead succeeds against the space.
+  const dimmed = [...rules.matchAll(/([^{}]+)\{[^{}]*opacity:\s*([^;}]+)/g)]
+    .filter((match) => (match[2] as string).trim() !== '1')
+    .map((match) => (match[1] as string).trim());
   assert.deepEqual(dimmed, [], 'no selector dims a box with an element opacity');
   assert.equal(styles.includes('opacity: 0.5'), false, 'the disabled button no longer dims itself');
   assert.equal(styles.includes('opacity: 0.6'), false, 'nor does the busy board row');
