@@ -69,6 +69,11 @@ export interface ApiDeps {
   readonly buildId: string;
   readonly mirror: () => void;
   readonly todoMdPath: string;
+  /**
+   * Restart this plugin's host half in place. Present so a host-half fix costs a click rather than
+   * every other session in the app losing its place in the queue.
+   */
+  readonly reload?: () => { readonly ok: boolean; readonly api: string; readonly message: string; readonly entries?: readonly string[] };
 }
 
 /**
@@ -574,6 +579,25 @@ export function createApiHandler(deps: ApiDeps): DshWebRoute['handler'] {
           comments: listComments(board, id),
           events: listEvents(board, { taskId: id, limit: 100 }),
         });
+        return;
+      }
+
+      /**
+       * Reload this plugin's host half, in place.
+       *
+       * Human-only, and it costs nothing else: no other session in the app is disturbed, which is
+       * the whole point. Dhira's other sessions must wait for each other before an app restart, so a
+       * host-half fix that needs one arrives late or not at all.
+       */
+      if (route === '/reload' && method === 'POST') {
+        requireHuman(actorFrom(req), 'reloading the plugin');
+        if (deps.reload === undefined) {
+          sendJson(res, 503, { ok: false, code: 'unavailable', message: 'this build has no reload capability' });
+          return;
+        }
+        const outcome = deps.reload();
+        // The reload is scheduled, so this answer is written by the code it is about to replace.
+        sendJson(res, outcome.ok ? 200 : 501, { ...outcome });
         return;
       }
 

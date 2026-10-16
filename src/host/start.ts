@@ -24,6 +24,7 @@ import { API_PREFIX, createApiHandler } from './api.js';
 import { readConfig, type KanbanConfig } from './config.js';
 import { SKILL_CONTENT, SKILL_DESCRIPTION, SKILL_NAME, SKILL_WHEN_TO_USE } from './skill.js';
 import { createTools, toolSchemaIssues } from './tools.js';
+import { reloadPlugin } from './reload.js';
 import type { ProbeRecord } from './probe.js';
 
 /**
@@ -139,6 +140,7 @@ export function start(ctx: DshHostContext, record: ProbeRecord, rawConfig: unkno
         buildId: __BUILD_ID__,
         mirror,
         todoMdPath: config.mirrorPath,
+        reload: () => reloadPlugin(ctx, 'kanban'),
       });
       ctx.effect(
         () => webServer.register({ kind: 'prefix', path: API_PREFIX, handler }),

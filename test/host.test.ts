@@ -27,6 +27,7 @@ import { join } from 'node:path';
 import { apply, inject, name } from '../lib/v1/host/index.js';
 import { TOOL_NAMES } from '../lib/v1/host/tools.js';
 import { API_PREFIX, isAllowedOrigin } from '../lib/v1/host/api.js';
+import { reloadPlugin } from '../lib/v1/host/reload.js';
 import type { DshHostContext, DshIncomingMessage, DshServerResponse, DshToolDefinition, DshWebRoute } from '../lib/v1/types/dsh.js';
 
 /** What the plugin declares it cannot work without. Kept here so a test cannot quietly drop one. */
@@ -792,6 +793,102 @@ test('health reports the origins it has seen, so a blocked request is diagnosabl
     assert.equal(evil?.allowed, false);
     assert.equal(evil?.path, `${API_PREFIX}/board`);
     assert.equal(health.recentOrigins.length <= 8, true, 'bounded, so it cannot grow without limit');
+  } finally {
+    box.restore();
+  }
+});
+
+// ------------------------------------------------------------------ reload without a restart
+
+test('reload restarts this entry through the Loader, and answers before it tears itself down', async () => {
+  // Dhira's constraint: an app restart makes every other session wait its turn, so a host-half fix
+  // must be applicable in place. The entry id is `include:kanban` and the Loader keys entries by
+  // patch, so the match has to accept both spellings.
+  const calls: string[] = [];
+  const scheduled: (() => void)[] = [];
+  const entry = {
+    options: { id: 'include:kanban', name: 'dsh-kanban' },
+    stop: () => {
+      calls.push('stop');
+    },
+    start: () => {
+      calls.push('start');
+    },
+  };
+  const ctx = { get: (serviceName: string) => (serviceName === 'loader' ? { entries: [entry] } : undefined) } as unknown as DshHostContext;
+
+  const outcome = reloadPlugin(ctx, 'kanban', (work) => scheduled.push(work), 0);
+  assert.equal(outcome.ok, true);
+  assert.equal(outcome.api, 'entry(include:kanban).stop/start');
+  assert.deepEqual(calls, [], 'nothing runs inline — the caller still has to be answered');
+  for (const work of scheduled) work();
+  assert.deepEqual(calls, ['stop'], 'stop is synchronous; start follows it');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls, ['stop', 'start'], 'and the entry comes back up');
+});
+
+test('reload reports exactly why it could not, rather than failing silently', () => {
+  const noLoader = { get: () => undefined } as unknown as DshHostContext;
+  assert.equal(reloadPlugin(noLoader, 'kanban').ok, false);
+  assert.match(reloadPlugin(noLoader, 'kanban').message, /no Loader/);
+
+  const wrongEntry = { get: () => ({ entries: [{ options: { id: 'include:other' } }] }) } as unknown as DshHostContext;
+  const outcome = reloadPlugin(wrongEntry, 'kanban');
+  assert.equal(outcome.ok, false);
+  assert.deepEqual(outcome.entries, ['include:other'], 'and names what it did find');
+
+  const noMethods = { get: () => ({ entries: [{ options: { id: 'kanban' } }] }) } as unknown as DshHostContext;
+  assert.equal(reloadPlugin(noMethods, 'kanban').ok, false);
+  assert.match(reloadPlugin(noMethods, 'kanban').message, /neither stop\/start/);
+
+  const viaUpdate: string[] = [];
+  const updatable = {
+    get: () => ({
+      entries: [{ options: { id: 'kanban' } }],
+      update: (id: string) => {
+        viaUpdate.push(id);
+      },
+    }),
+  } as unknown as DshHostContext;
+  const scheduled: (() => void)[] = [];
+  assert.equal(reloadPlugin(updatable, 'kanban', (work) => scheduled.push(work), 0).ok, true);
+  for (const work of scheduled) work();
+  assert.deepEqual(viaUpdate, ['kanban'], 'a loader without stop/start falls back to update');
+});
+
+test('POST /reload is the human\'s, and says which API it used', async () => {
+  const box = sandbox();
+  try {
+    const calls: string[] = [];
+    const host = fakeHost(INJECTED, {
+      loader: {
+        entries: [
+          {
+            options: { id: 'include:kanban', name: 'dsh-kanban' },
+            stop: () => calls.push('stop'),
+            start: () => calls.push('start'),
+          },
+        ],
+      },
+    });
+    await boot(host, box.home);
+    const route = host.routes[0] as DshWebRoute;
+
+    // An agent may not restart the plugin under other sessions.
+    const refused = await callRoute(route, 'POST', `${API_PREFIX}/reload`, '{}', { 'x-kanban-actor': 'agent:sess-9' });
+    assert.equal(refused.status, 422);
+    assert.equal((JSON.parse(refused.body) as { code: string }).code, 'human-only');
+
+    const allowed = await callRoute(route, 'POST', `${API_PREFIX}/reload`, '{}', { 'x-kanban-actor': 'human' });
+    assert.equal(allowed.status, 200, allowed.body);
+    const payload = JSON.parse(allowed.body) as { ok: boolean; api: string };
+    assert.equal(payload.ok, true);
+    assert.equal(payload.api, 'entry(include:kanban).stop/start');
+    assert.deepEqual(calls, [], 'the answer is written before the plugin tears itself down');
+
+    // And the scheduled work does happen, once the answer is out.
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    assert.deepEqual(calls, ['stop', 'start']);
   } finally {
     box.restore();
   }
