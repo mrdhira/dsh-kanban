@@ -36,6 +36,9 @@ function num(value: number | null): string {
 function linkOf(task: Task): string {
   if (task.folder !== null) {
     const relative = task.folder.replace(/^tasks\//, '');
+    // A backlog card is a queue entry, not a workspace: its folder may not exist yet, and a generated
+    // link to a missing path is a promise the view cannot keep. Path shown, link only once work starts.
+    if (task.state === 'backlog') return `\`${relative}/\``;
     return `[${task.id}](${relative}/requirements.md)`;
   }
   const first = task.links[0];

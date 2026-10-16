@@ -178,3 +178,15 @@ test('a partly-read board says so in the file, because its metrics cover only th
   assert.doesNotMatch(render(CARDS, { total: CARDS.length }), /Partial board/);
   assert.doesNotMatch(render(CARDS), /Partial board/);
 });
+
+test('a backlog folder is shown, not linked, because its folder may not exist yet', () => {
+  // A queued card is not a workspace. Linking a promise the view cannot keep is what put five broken
+  // links in the generated file when another session queued cards whose folders were not written yet.
+  const queued = makeTask({ id: 'T-010', title: 'queued', state: 'backlog', folder: 'tasks/T-010-queued' });
+  const started = makeTask({ id: 'T-011', title: 'started', state: 'in-progress', folder: 'tasks/T-011-started' });
+
+  const text = render([queued, started]);
+  assert.match(text, /T-010-queued\//, 'the path is still visible');
+  assert.equal(text.includes('[T-010](T-010-queued/requirements.md)'), false, 'but it is not a link');
+  assert.match(text, /\[T-011\]\(T-011-started\/requirements\.md\)/, 'a started card keeps its link');
+});
