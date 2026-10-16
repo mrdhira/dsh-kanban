@@ -401,3 +401,16 @@ export function formatStamp(iso: string): string {
   const pad = (value: number): string => String(value).padStart(2, '0');
   return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}Z`;
 }
+
+/**
+ * The actor's kind, from the store's `kind:id` spelling.
+ *
+ * The store writes an actor as one token — `human:dhira`, `agent:01J…` — and the history row printed
+ * it whole, so an operator read a raw session id where a word belonged (`ActorKind` existed for
+ * exactly this and was never used). The row prints this kind and keeps the raw token in its `title`.
+ * A token with no colon is returned unchanged rather than split into an invented kind.
+ */
+export function actorKind(actor: string): string {
+  const colon = actor.indexOf(':');
+  return colon === -1 ? actor : actor.slice(0, colon);
+}

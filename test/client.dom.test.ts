@@ -144,18 +144,27 @@ test('a lane past its limit says so', async () => {
   view.unmount();
 });
 
-test('the header names the revision it is showing, and the host line waits behind its disclosure', async () => {
+test('the header states the count plainly, and the host line waits behind its disclosure in the strip', async () => {
   const view = await mountBoard(loadBundle());
-  assert.match(view.text(), /rev 7/);
-  // The transport's URL is developer text and it does not sit in the most prominent row of a task
-  // board. The error notice below still names it, so nothing diagnostic is lost.
+  // `rev 7` and the transport URL are developer vocabulary, and the operator's front line is a task
+  // board: it says what is on it. The revision now travels with the host line, one disclosure deep.
+  const head = (): string => view.find('.kb-head')?.textContent ?? '';
+  assert.match(head(), /showing 5 of 6 cards/);
+  assert.equal(head().includes('rev'), false, 'no revision on the front line');
   assert.equal(view.text().includes('host http://localhost'), false, 'the host line is not on the front');
-  assert.equal(view.find('[data-action="more-host"]')?.getAttribute('aria-expanded'), 'false');
+
+  // Moved beside `More metrics`: it is the same kind of slow, technical fact, and it lives where the
+  // metrics disclosure lives rather than in the header's most prominent row.
+  const disclosure = view.find('.kb-metrics [data-action="more-host"]');
+  assert.ok(disclosure !== null, 'the host line lives in the metrics strip now');
+  assert.equal(disclosure.getAttribute('aria-expanded'), 'false');
+  assert.equal(view.find('.kb-head [data-action="more-host"]'), null, 'and it left the header');
 
   await view.click('[data-action="more-host"]');
   await flush();
   assert.equal(view.find('[data-action="more-host"]')?.getAttribute('aria-expanded'), 'true');
-  assert.match(view.text(), /host http:\/\/localhost/);
+  assert.match(view.text(), /host http:\/\/localhost/, 'opening it still names the transport');
+  assert.match(view.text(), /rev 7/, 'and the revision moved here rather than off the panel');
   view.unmount();
 });
 
@@ -166,12 +175,12 @@ test('the header count matches what is drawn, not what the host holds', async ()
   // states both numbers whenever the board cannot draw everything it holds.
   const view = await mountBoard(loadBundle());
   assert.equal(view.findAll('[data-card]').length, 5, 'five cards are drawn');
-  assert.match(view.text(), /rev 7 · showing 5 of 6 cards/, 'and the header accounts for the sixth');
-  assert.equal(view.text().includes('rev 7 · 6 cards'), false, 'never a total that disagrees with the screen');
+  assert.match(view.find('.kb-head')?.textContent ?? '', /showing 5 of 6 cards/, 'and the header accounts for the sixth');
+  assert.equal((view.find('.kb-head')?.textContent ?? '').includes('5 cards'), false, 'never a total that disagrees with the screen');
 
   // A board that draws every card it holds keeps the short form rather than a redundant "5 of 5".
   const whole = await mountBoard(loadBundle(), boardPayload());
-  assert.match(whole.text(), /rev 7 · 5 cards/);
+  assert.equal((whole.find('.kb-head')?.textContent ?? '').includes('5 cards'), true);
   whole.unmount();
   view.unmount();
 });
@@ -192,10 +201,14 @@ test('two numbers lead the metrics and the history opens behind one control', as
   assert.equal(view.find('[data-action="more-metrics"]')?.getAttribute('aria-expanded'), 'true');
   const opened = view.text();
   // The disclosure holds all three cycle readings, not the median alone: the payload has them, and
-  // the history behind the disclosure is exactly where a second and third reading belong.
-  assert.match(opened, /Cycle median 3d · p85 3d · mean 3d/);
+  // the history behind the disclosure is exactly where a second and third reading belong. The store's
+  // own field name (`p85`) is not a word anyone reads, so the reading is spelled out; the SLE says
+  // where its number came from instead of printing the field value `guess`.
+  assert.match(opened, /Cycle median 3d · 85th percentile 3d · mean 3d/);
   assert.match(opened, /Throughput 1\/7d · 1\/30d/);
-  assert.match(opened, /SLE 85% ≤ 3d/);
+  assert.match(opened, /SLE 85% ≤ 3d \(from default\)/);
+  assert.equal(opened.includes('p85'), false, 'no store field name reaches the screen');
+  assert.equal(opened.includes('guess'), false, 'and neither does the untranslated source');
   view.unmount();
 });
 
@@ -207,7 +220,7 @@ test('a metric the store cannot compute is an em dash, not a zero', async () => 
   const view = await mountBoard(loadBundle(), { ...fixture(), metrics });
   await view.click('[data-action="more-metrics"]');
   await flush();
-  assert.match(view.text(), /Cycle median —d · p85 —d · mean —d/);
+  assert.match(view.text(), /Cycle median —d · 85th percentile —d · mean —d/);
   view.unmount();
 });
 
@@ -769,7 +782,7 @@ test('P2.3: a write in flight marks the board busy, and the mark follows the sto
   assert.equal(lanes?.getAttribute('aria-busy'), 'true', 'a write in flight marks the board');
   assert.equal(lanes?.className.includes('kb-lanes-busy'), true, 'and says which pending state it is');
   assert.equal(lanes?.className.includes('kb-lanes-loading'), false, 'a write is not a first load');
-  assert.match(view.text(), /rev 7/, 'the board behind the write is still drawn');
+  assert.match(view.find('.kb-head')?.textContent ?? '', /5 cards/, 'the board behind the write is still drawn');
   view.unmount();
 
   // And the quiet case, as a contrast: no busy, no mark.
@@ -1684,8 +1697,9 @@ test('V2: every named box is a role that may carry a name — group, region, or 
   assert.equal(drawer?.getAttribute('role'), 'region', 'the drawer is a named region, not an anonymous box');
   assert.match(drawer?.getAttribute('aria-label') ?? '', /T-003/);
   // The board's announcer is the live region that must exist whether or not it has anything to say:
-  // a region inserted with its first message is one several readers never announce.
-  assert.equal(view.find('.kb-dim[role="status"][aria-live="polite"]') !== null, true, 'the announcer is mounted');
+  // a region inserted with its first message is one several readers never announce. It is visually
+  // hidden (see F26), so it takes no room while staying in the accessibility tree.
+  assert.equal(view.find('.kb-vh[role="status"][aria-live="polite"]') !== null, true, 'the announcer is mounted');
   view.unmount();
 });
 
@@ -2033,4 +2047,202 @@ test('the dark-block detector fails on the pre-fix, comment-split selector list'
     'body[data-ds-dark-theme] .kb-age-ageing { color: var(--dsw-alias-state-warn-primary, #d68945); }',
   ].join('\n');
   assert.equal(darkScopedRules(fixed).length, 1);
+});
+
+// ------------------------------------------------------------------ the second fix pass (fresh critique)
+
+test('F18: one select in the view row narrows the board to a single state', async () => {
+  // The distill removed the state chip row on the user's verdict, but it also removed the only path
+  // the human had to a *single* state: "only Done" became an agent's `kanban_list({ state: […] })`
+  // and nobody else's. One `select.kb-input` restores the capability without a second surface.
+  const view = await mountBoard(loadBundle());
+  assert.equal(view.findAll('[data-state]').length, 0, 'the chip row did not come back');
+  assert.equal(view.findAll('select.kb-input').length, 1, 'the view row gained exactly one select');
+  assert.equal(view.has('.kb-bar [data-select="view-state"]'), true);
+  assert.deepEqual(
+    view.findAll('[data-select="view-state"] option').map((node) => node.getAttribute('value')),
+    ['', 'backlog', 'ready', 'in-progress', 'review', 'done', 'dropped'],
+    'every state is offered, plus the way back out'
+  );
+  assert.equal(view.find('[data-select="view-state"]')?.getAttribute('aria-label'), 'Narrow to one state');
+
+  await view.type('[data-select="view-state"]', 'done');
+  await flush();
+  assert.equal(view.has('[data-card="T-005"]'), true, 'the done card is drawn');
+  assert.equal(view.has('[data-card="T-003"]'), false, 'and the cards in every other state are not');
+  assert.equal(view.find('[data-action="all"]')?.getAttribute('aria-pressed'), 'false', 'the narrowing is a filter');
+  assert.match(view.find('.kb-head')?.textContent ?? '', /showing 1 of 6 cards/);
+
+  // The empty option is the select's own way back out, and it is the same board as `All`.
+  await view.type('[data-select="view-state"]', '');
+  await flush();
+  assert.equal(view.has('[data-card="T-003"]'), true);
+  assert.equal(view.find('[data-action="all"]')?.getAttribute('aria-pressed'), 'true');
+  view.unmount();
+});
+
+test('F19: a successful drop says which card left and where it went', async () => {
+  // Dropping is the one move that takes a card off the board, and the board used to say nothing: the
+  // only feedback was `showing X of Y` ticking down, and the way back is a view nobody would guess.
+  const view = await mountBoard(loadBundle());
+  await view.click('[data-card="T-002"]');
+  await flush();
+  await view.click('[data-action="more"]');
+  await flush();
+  await view.type('[data-field="drop-reason"]', 'superseded by T-004');
+  await flush();
+  await view.click('[data-action="drop"]');
+  await flush();
+
+  assert.equal(lastMutation()?.body.toState, 'dropped', 'the drop itself still goes through the store');
+  const notice = view.find('.kb-notice-info');
+  assert.ok(notice !== null, 'the drop is acknowledged through the strip that says everything else');
+  assert.match(notice.textContent ?? '', /T-002 dropped — still on the board, under Dropped/);
+  assert.equal(notice.getAttribute('role'), 'status', 'and it is announced, not only painted');
+  view.unmount();
+});
+
+test('F20: the WIP lead names both limbs without putting them back on the surface', async () => {
+  // `WIP 2/3` sits beside `In Progress 2/2` and `Review 0/1` without saying that it is their sum, so
+  // the board can look self-contradictory. The limbs are named in the title; the visible `(2/2 + 0/1)`
+  // the distill removed does not return.
+  const view = await mountBoard(loadBundle());
+  const lead = view.findAll('.kb-metric-lead').find((node) => (node.textContent ?? '').startsWith('WIP'));
+  assert.ok(lead !== undefined, 'the WIP lead is on screen');
+  assert.equal(lead.textContent, 'WIP 2/3', 'the surface is exactly what it was');
+  assert.equal(lead.getAttribute('title'), 'In Progress 2/2 + Review 0/1', 'the two limbs are named');
+  assert.equal(view.text().includes('2/2 + 0/1'), false, 'the removed surface stayed removed');
+  view.unmount();
+});
+
+test('F23: the history prints the actor kind and keeps the raw session id in a title', async () => {
+  // The store writes an actor as one token — `agent:01JABC` — and the row printed it whole, so an
+  // operator read a session id where a word belonged (`ActorKind` existed for this and was unused).
+  setFetch((call) => {
+    if (call.url.includes('/board')) {
+      const payload = fixture();
+      return { status: 200, body: { ok: true, board: payload, rev: payload.rev } };
+    }
+    if (call.url.includes('/task/')) {
+      return {
+        status: 200,
+        body: {
+          ok: true,
+          task: null,
+          comments: [],
+          events: [
+            { id: 1, at: '2026-10-15T12:00:00.000Z', actor: 'agent:01JABC', taskId: 'T-003', kind: 'purged', fromState: 'review', toState: 'dropped', payload: {} },
+            { id: 2, at: '2026-10-15T13:00:00.000Z', actor: 'human:dhira', taskId: 'T-003', kind: 'moved', fromState: 'ready', toState: 'in-progress', payload: {} },
+          ],
+        },
+      };
+    }
+    return { status: 404, body: {} };
+  });
+  const view = mount(loadBundle(), loadBundle().slot('main'), { store: freshStore(loadBundle()) });
+  await flush();
+  await view.click('[data-card="T-003"]');
+  await flush();
+
+  const rows = view.findAll('[data-drawer="T-003"] .kb-mono');
+  assert.equal(rows.length, 2, 'both events are drawn');
+  const agentRow = rows[0];
+  assert.ok(agentRow !== undefined);
+  assert.match(agentRow.textContent ?? '', /purged/, 'the event kind is still printed');
+  assert.equal((agentRow.textContent ?? '').includes('01JABC'), false, 'the raw session id is not read out');
+  assert.match(agentRow.textContent ?? '', /\(agent\)/, 'the actor is named by its kind');
+  assert.equal(agentRow.getAttribute('title'), 'agent:01JABC', 'the id is one hover away');
+  const humanRow = rows[1];
+  assert.ok(humanRow !== undefined);
+  assert.match(humanRow.textContent ?? '', /\(human\)/);
+  assert.equal(humanRow.getAttribute('title'), 'human:dhira');
+  view.unmount();
+});
+
+test('F24: the metrics speak words, not store fields — 85th percentile, from history or default', async () => {
+  const view = await mountBoard(loadBundle()); // the fixture's SLE source is the store's `guess`
+  await view.click('[data-action="more-metrics"]');
+  await flush();
+  const opened = view.text();
+  assert.match(opened, /Cycle median 3d · 85th percentile 3d · mean 3d/);
+  assert.match(opened, /SLE 85% ≤ 3d \(from default\)/, 'a declared SLE says so in words');
+  assert.equal(opened.includes('p85'), false, 'the store field name is not printed');
+  assert.equal(opened.includes('guess'), false, 'nor is `guess`');
+  view.unmount();
+
+  // And the other basis: an SLE computed from the board's own history says so. The store's computed
+  // reading is `metrics.sle`; `dow.sle` is the declared default it falls back to.
+  const payload = boardPayload();
+  const metrics = {
+    ...(payload.metrics as Record<string, unknown>),
+    sle: { p: 0.85, days: 3, source: 'history', basis: 6 },
+  };
+  const history = await mountBoard(loadBundle(), { ...fixture(), metrics });
+  await history.click('[data-action="more-metrics"]');
+  await flush();
+  assert.match(history.text(), /SLE 85% ≤ 3d \(from history\)/);
+  history.unmount();
+});
+
+test('F25: a lane’s accessible name carries its limit and its warning', async () => {
+  // The header prints `1/5` and, past the cap, an `over limit` chip, while the name said only
+  // "Ready, 1 card(s)" — a reader was told less than the picture, and `card(s)` is not a word.
+  const view = await mountBoard(loadBundle());
+  assert.equal(view.find('[data-lane="ready"]')?.getAttribute('aria-label'), 'Ready, 1 card, limit 5');
+  assert.equal(view.find('[data-lane="backlog"]')?.getAttribute('aria-label'), 'Backlog, 1 card', 'an uncapped state names no limit');
+  assert.equal(view.text().includes('card(s)'), false, 'no store plural is read out anywhere on the panel');
+  view.unmount();
+
+  // Three cards against a review limit of one: the name has to say what the red count and the chip say.
+  const payload = fixture();
+  const tasks = payload.tasks as Record<string, unknown>[];
+  const extra = { ...(tasks[0] as Record<string, unknown>), id: 'T-099', state: 'review', position: 0 };
+  const over = await mountBoard(loadBundle(), { ...payload, tasks: [...tasks, extra, { ...extra, id: 'T-098' }] });
+  assert.equal(
+    over.find('[data-lane="review"]')?.getAttribute('aria-label'),
+    'Review, 2 cards, limit 1, over the limit'
+  );
+  over.unmount();
+});
+
+test('F26: the live region is visually hidden and does not keep stale text', async () => {
+  const styles = readFileSync(new URL('../src/client/styles.ts', import.meta.url), 'utf8');
+  const start = styles.indexOf('.kb-vh {');
+  assert.equal(start > -1, true, 'the one utility class is authored');
+  const rule = styles.slice(start, styles.indexOf('}', start) + 1);
+  assert.match(rule, /position: absolute/);
+  assert.match(rule, /width: 1px; height: 1px/);
+  assert.match(rule, /clip-path: inset\(50%\)/);
+  // It must stay in the accessibility tree: `display: none` / `visibility: hidden` would silence it.
+  assert.equal(rule.includes('display'), false);
+  assert.equal(rule.includes('visibility'), false);
+
+  const view = await mountBoard(loadBundle());
+  const announcer = view.find('.kb-vh[role="status"][aria-live="polite"]');
+  assert.ok(announcer !== null, 'the live region is the visually hidden box');
+  assert.equal(announcer.textContent, '', 'and it starts empty rather than carrying an old sentence');
+  assert.equal(view.find('.kb-dim[role="status"]'), null, 'the visible copy is gone');
+
+  // A message arrives, then clears: a stray "already at the edge" line does not sit in the DOM.
+  await view.key('[data-card="T-001"]', 'ArrowLeft', { altKey: true });
+  await flush();
+  assert.match(view.find('.kb-vh')?.textContent ?? '', /already at the edge/);
+  await new Promise((resolve) => setTimeout(resolve, 5200));
+  await flush();
+  assert.equal(view.find('.kb-vh')?.textContent, '', 'the last message does not persist');
+  view.unmount();
+});
+
+test('F21: the drawer’s two bare ellipses now name what they do', async () => {
+  // `More…` and `Exception…` named nothing: neither said what it would show or what it was an
+  // exception *to*. Labels only — the controls and their `data-action`s are unchanged.
+  const view = await mountBoard(loadBundle());
+  await view.click('[data-card="T-003"]');
+  await flush();
+  assert.equal(view.find('[data-action="more"]')?.textContent, 'More moves…');
+  await view.click('[data-action="more"]');
+  await flush();
+  assert.equal(view.find('[data-action="exception"]')?.textContent, 'Exception to a gate…');
+  assert.equal(view.find('[data-action="exception"]')?.getAttribute('aria-expanded'), 'false');
+  view.unmount();
 });

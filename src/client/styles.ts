@@ -233,6 +233,16 @@ input[type="number"].kb-input { min-width: 76px; }
 .kb-metrics b { font-weight: 600; }
 .kb-list { display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
 .kb-dim { color: var(--dsw-alias-label-secondary, inherit); }
+/* The one visually-hidden utility, and the only thing on the panel that is styled to be unseen. The
+   board's announcer is a live region that must be *mounted* -- a region inserted together with its
+   first message is one many screen readers never announce -- but it is not content: as a '.kb-dim'
+   span it sat in the page's 10px gap as a permanent empty box and then as a stray
+   "moving T-004 to review" line. Clipping it to a 1px box keeps it in the accessibility tree (so it
+   still announces) while removing it from layout. It is deliberately **not** 'display: none' or
+   'visibility: hidden': those remove the node from the accessibility tree too, and a silent live
+   region announces nothing. */
+.kb-vh { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .kb-empty { color: var(--dsw-alias-label-secondary, var(--kb-label-secondary)); padding: 10px 2px; }
 /* One focus ring for every control, so nothing relies on the browser default. The card keeps a
    tighter offset because it sits inside the horizontally scrolled lane. A disabled button is not

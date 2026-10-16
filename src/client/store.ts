@@ -23,7 +23,7 @@ import {
   type BoardPayload,
   type ViewFilter,
 } from './model.js';
-import type { CheckId, State, Task } from '../store/types.js';
+import { STATE_LABEL, type CheckId, type State, type Task } from '../store/types.js';
 
 export type BoardStatus = 'idle' | 'loading' | 'ready' | 'error';
 
@@ -160,8 +160,8 @@ export function createBoardStore(transport: BoardTransport, options: BoardStoreO
     }
   }
 
-  /** Run one write: apply locally, ask the host, roll back and report if it says no. */
-  async function write(op: string, payload: Record<string, unknown>, optimistic?: () => BoardPayload | null): Promise<void> {
+  /** Run one write: apply locally, ask the host, roll back and report if it says no. Returns whether it landed. */
+  async function write(op: string, payload: Record<string, unknown>, optimistic?: () => BoardPayload | null): Promise<boolean> {
     const previous = state.payload;
     const optimisticNext = optimistic?.() ?? null;
     if (optimisticNext !== null) set({ payload: optimisticNext, busy: true, notice: null });
@@ -171,10 +171,12 @@ export function createBoardStore(transport: BoardTransport, options: BoardStoreO
       await transport.mutate(op, payload);
       await refresh(true);
       set({ busy: false });
+      return true;
     } catch (error) {
       // Roll back to what the host still believes, then say why.
       set({ payload: previous, busy: false, notice: refusalNotice(error) });
       await refresh(true);
+      return false;
     }
   }
 
@@ -309,11 +311,25 @@ export function createBoardStore(transport: BoardTransport, options: BoardStoreO
     async drop(id, reason) {
       const payload = state.payload;
       const task = payload?.tasks.find((entry) => entry.id === id);
-      await write(
+      const landed = await write(
         'move',
         { id, toState: 'dropped', reason, ...(task === undefined ? {} : { expectedRev: task.rev }) },
         payload === null ? undefined : () => applyLocalMove(payload, id, 'dropped', task?.position ?? 0, now().toISOString())
       );
+      // Dropping is the one move that takes a card off the board, and the board said nothing: the
+      // only feedback was `showing X of Y` ticking down, and the way back lives in a view nobody
+      // would guess. A successful drop acknowledges where the card went, in the strip that already
+      // carries every other thing the panel has to say. A refusal keeps its own notice.
+      if (landed) {
+        noticeSeq += 1;
+        set({
+          notice: {
+            kind: 'info',
+            message: `${id} dropped — still on the board, under ${STATE_LABEL.dropped}`,
+            at: noticeSeq,
+          },
+        });
+      }
     },
 
     async purge(id) {

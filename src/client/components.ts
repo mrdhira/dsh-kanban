@@ -21,11 +21,11 @@
 import type { ReactElement } from 'react';
 import type { BoardStore, BoardState } from './store.js';
 import { selectedTask } from './store.js';
-import { BOARD_STATES, DROPPED_FILTER, EMPTY_FILTER, ageBand, ageDays, classLabel, columnsOf, filterStates, formatAge, formatPercent, formatStamp, hasFilter, moveTargets, priorityCode, priorityWord, sameFilter, type Column } from './model.js';
+import { BOARD_STATES, DROPPED_FILTER, EMPTY_FILTER, actorKind, ageBand, ageDays, classLabel, columnsOf, filterStates, formatAge, formatPercent, formatStamp, hasFilter, moveTargets, priorityCode, priorityWord, sameFilter, type Column } from './model.js';
 import { beginDrag, dragOver, dropTarget, indexFromPointer, isDropAllowed, keyboardTarget, type DragState } from './dnd.js';
 import { API_PREFIX } from './api.js';
 import { STYLES, STYLE_ID } from './styles.js';
-import { CHECK_LABEL, CLASSES_OF_SERVICE, CLASS_LABEL, PRIORITIES, PRIORITY_LABEL, STATE_LABEL, type CheckId, type ClassOfService, type Priority, type State, type Task } from '../store/types.js';
+import { CHECK_LABEL, CLASSES_OF_SERVICE, CLASS_LABEL, PRIORITIES, PRIORITY_LABEL, STATES, STATE_LABEL, type CheckId, type ClassOfService, type Priority, type State, type Task } from '../store/types.js';
 
 /** The `require('react')` handle, passed down as a prop so this module stays realm-agnostic. */
 export interface ReactLike {
@@ -162,10 +162,12 @@ function NoticeStrip(props: ChildProps): ReactElement | null {
 interface MetricsProps extends ChildProps {
   readonly open: boolean;
   readonly onToggle: () => void;
+  readonly hostOpen: boolean;
+  readonly onToggleHost: () => void;
 }
 
 function MetricsStrip(props: MetricsProps): ReactElement | null {
-  const { React, state, open, onToggle } = props;
+  const { React, state, open, onToggle, hostOpen, onToggleHost } = props;
   const payload = state.payload;
   if (payload === null) return null;
   const metrics = payload.metrics;
@@ -174,22 +176,44 @@ function MetricsStrip(props: MetricsProps): ReactElement | null {
   // the SLE. They answer *is anything stuck?* on their own; the history behind the toggle answers
   // *how has it been going?*, which is a second question and gets a second click.
   const wipLimit = payload.dow.wip['in-progress'] + payload.dow.wip.review;
-  const lead = (label: string, value: string): ReactElement =>
-    React.createElement('span', { className: 'kb-metric-lead' }, React.createElement('b', null, label), ` ${value}`);
+  // `WIP 2/3` is the sum of two limbs, and the lane headers print those limbs separately (`2/2` and
+  // `0/1`), so the lead can look self-contradictory next to them. The limbs are named in the span's
+  // `title` rather than spelled out on the surface: the distill removed `(2/2 + 0/1)` from this line
+  // for a reason, and a hover is enough to answer the question the eye just asked.
+  const wipLimbs =
+    `${STATE_LABEL['in-progress']} ${metrics.wipByState['in-progress'] ?? 0}/${payload.dow.wip['in-progress']}` +
+    ` + ${STATE_LABEL.review} ${metrics.wipByState.review ?? 0}/${payload.dow.wip.review}`;
+  // The store speaks in field values (`p85`, `guess`); a reader does not. `85th percentile` and
+  // `from history`/`from default` are the same facts in the words the rest of the panel uses.
+  const sleBasis = metrics.sle.source === 'history' ? 'from history' : 'from default';
+  const lead = (label: string, value: string, hint?: string): ReactElement =>
+    React.createElement(
+      'span',
+      { className: 'kb-metric-lead', ...(hint === undefined ? {} : { title: hint }) },
+      React.createElement('b', null, label),
+      ` ${value}`
+    );
   const rest = (label: string, value: string): ReactElement =>
     React.createElement('span', { className: 'kb-dim' }, React.createElement('b', null, label), ` ${value}`);
   return React.createElement(
     'div',
     { className: 'kb-metrics', role: 'group', 'aria-label': 'Flow metrics' },
-    lead('WIP', `${metrics.wip}/${wipLimit}`),
+    lead('WIP', `${metrics.wip}/${wipLimit}`, wipLimbs),
     lead('Oldest', `${num(metrics.ageing.oldestDays)}d vs ${metrics.sle.days}d SLE · ${metrics.ageing.count} past`),
     disclosureButton(React, { label: 'More metrics', open, action: 'more-metrics', onToggle }),
-    open ? rest('Cycle', `median ${num(metrics.cycle.medianDays)}d · p85 ${num(metrics.cycle.p85Days)}d · mean ${num(metrics.cycle.meanDays)}d`) : null,
+    // The transport's address is developer text, so it lives beside the other slow, technical facts
+    // rather than on the header's front line. `rev` is the same kind of fact and travels with it: the
+    // error notice already names the URL, the origin and the document when any of that matters.
+    disclosureButton(React, { label: 'Host', open: hostOpen, action: 'more-host', onToggle: onToggleHost }),
+    open ? rest('Cycle', `median ${num(metrics.cycle.medianDays)}d · 85th percentile ${num(metrics.cycle.p85Days)}d · mean ${num(metrics.cycle.meanDays)}d`) : null,
     open ? rest('Throughput', `${metrics.throughput.days7}/7d · ${metrics.throughput.days30}/30d`) : null,
     // The three cycle readings are one fact told three ways — the disclosure exists to hold what the
     // front cannot, so it holds all of them rather than the median alone. The full metrics, including
     // each band's own basis, stay in `kanban_metrics`.
-    open ? rest('SLE', `${formatPercent(metrics.sle.p)}% ≤ ${metrics.sle.days}d (${metrics.sle.source})`) : null
+    open ? rest('SLE', `${formatPercent(metrics.sle.p)}% ≤ ${metrics.sle.days}d (${sleBasis})`) : null,
+    hostOpen
+      ? React.createElement('span', { className: 'kb-dim' }, `rev ${payload.rev} · host ${state.origin.origin} · ${state.origin.source}`)
+      : null
   );
 }
 
@@ -428,6 +452,14 @@ function Lane(props: LaneProps): ReactElement {
   // because a drop target you cannot hit is not a drop target.
   if (column.cards.length === 0) classes.push('kb-lane-empty');
   if (column.cards.length === 0 && drag !== null) classes.push('kb-lane-awake');
+  // The accessible name has to say what the eye is given. The header prints `1/5` and, past the cap,
+  // an `over limit` chip, while the name said only "Ready, 1 card(s)" — a reader was told less than
+  // the picture, and `card(s)` is a store plural, not a word. The name now carries the count, the
+  // limit whenever the state has one, and the warning in words whenever it is over.
+  const laneName =
+    `${column.label}, ${column.cards.length} ${column.cards.length === 1 ? 'card' : 'cards'}` +
+    (column.limit === undefined ? '' : `, limit ${column.limit}`) +
+    (column.over ? ', over the limit' : '');
 
   return React.createElement(
     'div',
@@ -440,7 +472,7 @@ function Lane(props: LaneProps): ReactElement {
       // focusable, where no reader could act on it; the card that *is* focusable already declares the
       // same shortcut, and the drawer's own hint spells it out.
       role: 'group',
-      'aria-label': `${column.label}, ${column.cards.length} card(s)`,
+      'aria-label': laneName,
       onDragOver: (event: { preventDefault: () => void; clientY: number }) => {
         event.preventDefault();
         if (drag === null) return;
@@ -739,11 +771,11 @@ function Drawer(props: DrawerProps): ReactElement {
         { className: 'kb-bar' },
         next === null ? null : moveButton(next),
         disclosureButton(React, {
-          label: 'More…',
+          label: 'More moves…',
           open: moreOpen,
           action: 'more',
           // The visible text stays inside the accessible name, so speech control still finds it.
-          ariaLabel: `More… actions for ${task.id}`,
+          ariaLabel: `More moves for ${task.id}`,
           onToggle: () => setMoreOpen(!moreOpen),
         })
       ),
@@ -799,7 +831,7 @@ function Drawer(props: DrawerProps): ReactElement {
                   'aria-expanded': exceptionOpen,
                   onClick: () => setExceptionOpen(!exceptionOpen),
                 },
-                'Exception…'
+                'Exception to a gate…'
               )
             ),
             exceptionOpen
@@ -984,8 +1016,15 @@ function Drawer(props: DrawerProps): ReactElement {
           events.map((entry) =>
             React.createElement(
               'span',
-              { className: 'kb-mono kb-dim', key: String(entry.id) },
-              `${formatStamp(entry.at)} ${entry.kind}${entry.toState === null ? '' : ` → ${STATE_LABEL[entry.toState]}`} (${entry.actor})`
+              {
+                className: 'kb-mono kb-dim',
+                key: String(entry.id),
+                // The store writes the actor as `kind:id` — `agent:01J…`, a raw session id, which is
+                // not a word for a human to read. The row prints the *kind* and keeps the id in the
+                // title, where a reader who wants to know which session moved the card can find it.
+                title: entry.actor,
+              },
+              `${formatStamp(entry.at)} ${entry.kind}${entry.toState === null ? '' : ` → ${STATE_LABEL[entry.toState]}`} (${actorKind(entry.actor)})`
             )
           )
         )
@@ -1025,6 +1064,21 @@ export function BoardPage(props: BoardProps): ReactElement {
   React.useEffect(() => store.start(), [store]);
 
   /**
+   * The announcer says a thing once; it does not keep it.
+   *
+   * The region must be mounted on every pass so a reader has something to announce *into*, but a
+   * message left there is stale the moment the move it describes has landed — the stray
+   * `moving T-004 to review` line outlived the move. So the text is cleared after a bound: long
+   * enough for a polite region to be read, short enough that the message is not still in the DOM
+   * when the board has moved on. Clearing does not un-announce it; the region stays mounted.
+   */
+  React.useEffect(() => {
+    if (announcement.length === 0) return;
+    const timer = setTimeout(() => setAnnouncement(''), 5000);
+    return () => clearTimeout(timer);
+  }, [announcement]);
+
+  /**
    * Inject the stylesheet once, under `STYLE_ID`.
    *
    * A `<style>` element inside the render tree is written on every render — and the board re-renders
@@ -1059,6 +1113,11 @@ export function BoardPage(props: BoardProps): ReactElement {
   const shown = columns.reduce((total, column) => total + column.cards.length, 0);
   const total = state.payload?.total ?? 0;
   const filtered = hasFilter(state.filter);
+  // The view row's one narrowing control. The state chip row was distilled away on purpose — the
+  // view buttons are the panel's state filtering — but that cut removed the only path a human had to
+  // a *single* state, which made "only Done" an agent's `kanban_list({ state: … })` and nobody
+  // else's. One select restores it and adds no row: the primitive was already in the sheet.
+  const narrowedState = state.filter.state !== undefined && state.filter.state.length === 1 ? state.filter.state[0] : '';
   const task = selectedTask(state);
   const onAnnounce = (message: string): void => setAnnouncement(message);
   const child = { React, state, store, onAnnounce, cardNodes };
@@ -1070,32 +1129,23 @@ export function BoardPage(props: BoardProps): ReactElement {
       'div',
       { className: 'kb-head' },
       React.createElement('h1', { className: 'kb-title' }, state.payload?.title ?? 'Kanban'),
-      // The count line folds the filter's own answer into the revision the board is showing, so a
-      // narrowed board says so in the header instead of in a row of its own. The test is `shown !==
-      // total`, not `filtered`: an unfiltered board still draws fewer cards than the host holds when
-      // one is `dropped` (it has no lane) or the read was truncated, and a header that said "6 cards"
-      // over five drawn cards is the kind of small lie this board exists to avoid.
+      // The count line folds the filter's own answer into what is drawn, so a narrowed board says so
+      // in the header instead of in a row of its own. The test is `shown !== total`, not `filtered`:
+      // an unfiltered board still draws fewer cards than the host holds when one is `dropped` (it has
+      // no lane) or the read was truncated, and a header that said "6 cards" over five drawn cards is
+      // the kind of small lie this board exists to avoid. **The revision is not here**: `rev 7` is
+      // developer vocabulary on the operator's front line, so it travels with the host line behind
+      // the `Host` disclosure in the metrics strip.
       React.createElement(
         'span',
         { className: 'kb-sub' },
         state.payload === null
           ? 'connecting…'
           : filtered || shown !== total
-            ? `rev ${state.payload.rev} · showing ${shown} of ${total} cards`
-            : `rev ${state.payload.rev} · ${total} cards`
+            ? `showing ${shown} of ${total} cards`
+            : `${total} cards`
       ),
       React.createElement('span', { className: 'kb-spacer' }),
-      // The transport's URL is developer text. When something actually fails, the error notice
-      // below names the URL, the origin and the document, so the always-on line earned nothing.
-      disclosureButton(React, {
-        label: 'Host',
-        open: hostOpen,
-        action: 'more-host',
-        onToggle: () => setHostOpen(!hostOpen),
-      }),
-      hostOpen
-        ? React.createElement('span', { className: 'kb-sub' }, `host ${state.origin.origin} · ${state.origin.source}`)
-        : null,
       React.createElement('button', { className: 'kb-btn', type: 'button', onClick: () => void store.refresh(true) }, 'Refresh')
     ),
     React.createElement(
@@ -1163,6 +1213,25 @@ export function BoardPage(props: BoardProps): ReactElement {
           'Dropped'
         )
       ),
+      // The one narrowing control the view row gets, and the only new surface this pass adds: a
+      // `select.kb-input` listing every state. Choosing one narrows the board to that state alone
+      // (choosing the empty option clears the filter, exactly as `All` does). No chip row returns:
+      // per-state chips are a second surface for a question one picker answers.
+      React.createElement(
+        'select',
+        {
+          className: 'kb-input',
+          'data-select': 'view-state',
+          'aria-label': 'Narrow to one state',
+          value: narrowedState,
+          onChange: (event: { target: { value: string } }) => {
+            const chosen = event.target.value;
+            store.setFilter(chosen.length === 0 ? EMPTY_FILTER : { state: [chosen as State] });
+          },
+        },
+        React.createElement('option', { value: '' }, filtered ? 'current view' : 'all states'),
+        ...STATES.map((entry) => React.createElement('option', { key: entry, value: entry }, STATE_LABEL[entry]))
+      ),
       React.createElement('span', { className: 'kb-spacer' }),
       React.createElement('input', {
         className: 'kb-input',
@@ -1201,11 +1270,19 @@ export function BoardPage(props: BoardProps): ReactElement {
           { className: 'kb-notice kb-notice-info' },
           `showing ${state.payload.truncated.shown} of ${state.payload.truncated.total} cards — the flow metrics cover only those`
         ),
-    React.createElement(MetricsStrip, { ...child, open: metricsOpen, onToggle: () => setMetricsOpen(!metricsOpen) }),
+    React.createElement(MetricsStrip, {
+      ...child,
+      open: metricsOpen,
+      onToggle: () => setMetricsOpen(!metricsOpen),
+      hostOpen,
+      onToggleHost: () => setHostOpen(!hostOpen),
+    }),
     // The announcer, present on every pass whether or not it has anything to say: a live region that
     // is inserted with its first message is a live region several screen readers never announce. It
-    // is empty text, so it paints nothing.
-    React.createElement('div', { className: 'kb-dim', role: 'status', 'aria-live': 'polite' }, announcement),
+    // is visually hidden — `.kb-vh`, the sheet's one utility class — so the strip paints nothing and
+    // takes no room in the page's 10px gap, and its last message is cleared after a bound rather than
+    // left in the DOM as stale text a reader could walk back into.
+    React.createElement('div', { className: 'kb-vh', role: 'status', 'aria-live': 'polite' }, announcement),
     state.status === 'error' && state.payload === null
       ? React.createElement(
           'div',
