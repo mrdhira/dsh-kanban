@@ -6,6 +6,12 @@
  * the shipped `@deepseek-ai/dsh-tool-todo`: a `parameters` record whose members carry their own
  * `required`, an `output.schema`, and a `render` that returns content blocks.
  *
+ * That per-property `parameters` record is `defineTool`'s *input* dialect, not what the registry
+ * stores. `defineTool` compiles it to an object-rooted JSON Schema; a raw `ctx.tools.register`
+ * does not, and hands `parameters` to the model verbatim. So `createTools` runs every definition
+ * through `toParameterSchema` — without it, the provider rejects the whole request with
+ * `schema must be a JSON Schema of 'type: "object"', got 'type: null'`.
+ *
  * Two decisions worth stating:
  *
  * - **Few tools, thin wrappers.** Nine, not ninety. Each one is a small translation of arguments
@@ -108,6 +114,22 @@ function actorOf(exec: DshToolRunContext): Actor {
 
 function json(value: unknown): DshJson {
   return JSON.parse(JSON.stringify(value ?? null)) as DshJson;
+}
+
+/**
+ * Compile a per-property `parameters` record into the object-rooted JSON Schema the registry
+ * projects to the model — what `defineTool` does for first-party tools. Each `required: true`
+ * moves off its property into the root `required` array.
+ */
+export function toParameterSchema(spec: Record<string, unknown>): Record<string, unknown> {
+  const properties: Record<string, unknown> = {};
+  const required: string[] = [];
+  for (const [key, value] of Object.entries(spec)) {
+    const { required: isRequired, ...property } = value as Record<string, unknown>;
+    if (isRequired === true) required.push(key);
+    properties[key] = property;
+  }
+  return { type: 'object', properties, ...(required.length > 0 ? { required } : {}) };
 }
 
 /** A compact board listing, ordered for reading rather than for the database. */
@@ -658,7 +680,9 @@ export function createTools(deps: ToolDeps): DshToolDefinition[] {
     },
   };
 
-  return [listTool, getTool, createTool, updateTool, moveTool, deleteTool, sprintTool, boardTool, metricsTool];
+  return [listTool, getTool, createTool, updateTool, moveTool, deleteTool, sprintTool, boardTool, metricsTool].map(
+    (tool) => ({ ...tool, parameters: toParameterSchema(tool.parameters) })
+  );
 }
 
 /** Tool names, for the probe record and for `listTools` verification. */

@@ -79,13 +79,11 @@ test('every tool carries a description, a parameters object and a render', () =>
   }
 });
 
-test('every parameter that carries `required` also carries a type', () => {
+test('every parameter carries a type', () => {
   for (const tool of tools(openBoard(':memory:'))) {
-    for (const [name, spec] of Object.entries(tool.parameters as Record<string, Record<string, unknown>>)) {
+    const { properties } = tool.parameters as { properties: Record<string, Record<string, unknown>> };
+    for (const [name, spec] of Object.entries(properties)) {
       assert.equal(typeof spec.type, 'string', `${tool.name}.${name} has no type`);
-      if (spec.required === true) {
-        assert.ok(tool.description.length > 0, `${tool.name}.${name} is required but the tool has no prose`);
-      }
     }
   }
 });
@@ -394,7 +392,7 @@ test('kanban_board does not offer the migration, and refuses it if asked anyway'
   // The migration writes rows that bypass every gate, so it is not an agent's action at all — it
   // is `bin/kanban.mjs migrate`, or the route with a human actor. An action that always refused
   // would be a trap in the schema, so it is gone from the enum; the handler still ignores it.
-  const action = (byName(list, 'kanban_board').parameters as { action: { enum: string[] } }).action;
+  const action = (byName(list, 'kanban_board').parameters as { properties: { action: { enum: string[] } } }).properties.action;
   assert.equal(action.enum.includes('import-todo'), false);
   await call(list, 'kanban_board', { action: 'import-todo', text: '| T-101 | a row | done | — | — | — | — |' });
   assert.equal(listTasks(board, { limit: 10 }).total, 0, 'nothing was imported through a tool');
@@ -428,10 +426,26 @@ test('every tool output schema is real JSON Schema, which is the dialect the reg
   }
 });
 
-test('the tool parameters keep the per-property required dialect the registry expects', () => {
-  // The mirror image of the test above: `parameters` is *not* JSON Schema, and "fixing" it to look
-  // like one would break every tool.
-  const list = byName(tools(openBoard(':memory:')), 'kanban_move');
-  const toState = (list.parameters as Record<string, { required?: unknown }>).toState;
-  assert.equal(toState?.required, true, 'parameters use `required: true` per property');
+test('every tool parameters schema is object-rooted JSON Schema, which is what the model is sent', () => {
+  // A raw `ctx.tools.register` does not compile `parameters` the way `defineTool` does: the
+  // registry projects it to the provider verbatim. The per-property dialect reached the provider
+  // as a schema with no root type, and every request failed with
+  //   `schema must be a JSON Schema of 'type: "object"', got 'type: null'`.
+  for (const tool of tools(openBoard(':memory:'))) {
+    const schema = tool.parameters as {
+      readonly type?: unknown;
+      readonly required?: unknown;
+      readonly properties?: Record<string, { readonly required?: unknown }>;
+    };
+    assert.equal(schema.type, 'object', `${tool.name}.parameters needs type "object" at the root`);
+    assert.equal(typeof schema.properties, 'object', `${tool.name}.parameters needs properties`);
+    for (const [property, spec] of Object.entries(schema.properties ?? {})) {
+      assert.equal(spec.required, undefined, `${tool.name}.parameters.properties.${property}.required — use the array`);
+    }
+    for (const name of (schema.required ?? []) as string[]) {
+      assert.ok(schema.properties?.[name] !== undefined, `${tool.name}: required names ${name}, which is not a property`);
+    }
+  }
+  const move = byName(tools(openBoard(':memory:')), 'kanban_move').parameters as { required?: string[] };
+  assert.ok(move.required?.includes('toState'), 'a per-property required: true lands in the root array');
 });
