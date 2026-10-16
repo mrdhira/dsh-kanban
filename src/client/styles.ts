@@ -37,6 +37,12 @@ export const STYLES = `
 /* One action group per concern, so a reversible move never sits unlabelled beside Drop. */
 .kb-group { display: flex; flex-direction: column; gap: 3px; }
 .kb-group-danger { border-top: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.35)); padding-top: 7px; }
+/* A disclosure's toggle is the smallest control on the panel: it names what it reveals, and its
+   aria-expanded attribute is both its state and what the shared pressed treatment reads. */
+.kb-more { padding: 1px 7px; font-size: 12px; }
+.kb-more[aria-expanded="true"] { font-weight: 600; }
+/* The revealed half of a drawer's disclosure, set off from the row it opens from. */
+.kb-fold { display: flex; flex-direction: column; gap: 9px; border-top: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.35)); padding-top: 7px; }
 .kb-notice { border: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.35)); border-radius: var(--kb-radius-control, 7px);
   padding: 7px 11px; display: flex; gap: 10px; align-items: baseline; }
 .kb-notice-refusal { border-color: var(--dsw-alias-state-error-primary, #d64545); }

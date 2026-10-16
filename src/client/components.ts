@@ -21,7 +21,7 @@
 import type { ReactElement } from 'react';
 import type { BoardStore, BoardState } from './store.js';
 import { selectedTask } from './store.js';
-import { EMPTY_FILTER, ageBand, ageDays, classLabel, columnsOf, filterableStates, formatAge, formatPercent, formatStamp, hasFilter, moveTargets, priorityCode, priorityText, priorityWord, sameFilter, type Column } from './model.js';
+import { BOARD_STATES, EMPTY_FILTER, ageBand, ageDays, classLabel, columnsOf, formatAge, formatPercent, formatStamp, hasFilter, moveTargets, priorityCode, priorityWord, sameFilter, type Column } from './model.js';
 import { beginDrag, dragOver, dropTarget, indexFromPointer, keyboardTarget, type DragState } from './dnd.js';
 import { API_PREFIX } from './api.js';
 import { STYLES, STYLE_ID } from './styles.js';
@@ -56,6 +56,38 @@ interface ChildProps {
 
 // ------------------------------------------------------------------ chrome
 
+/**
+ * The toggle for a disclosure: `aria-expanded` is the whole state, and it is a real `<button>`.
+ *
+ * Not `<details>`: the opened half has to render as part of the row it belongs to (a metrics strip,
+ * a drawer's move row) rather than inside a block box the browser styles, and a toggle whose open
+ * state is testable DOM is worth more here than the platform's own widget. The label never changes
+ * when it is used — a control that renames itself is two controls to a reader.
+ */
+function disclosureButton(
+  React: ReactLike,
+  props: {
+    readonly label: string;
+    readonly open: boolean;
+    readonly action: string;
+    readonly ariaLabel?: string;
+    readonly onToggle: () => void;
+  }
+): ReactElement {
+  return React.createElement(
+    'button',
+    {
+      className: 'kb-btn kb-more',
+      type: 'button',
+      'data-action': props.action,
+      'aria-expanded': props.open,
+      ...(props.ariaLabel === undefined ? {} : { 'aria-label': props.ariaLabel }),
+      onClick: props.onToggle,
+    },
+    props.label
+  );
+}
+
 function NoticeStrip(props: ChildProps): ReactElement | null {
   const { React, state, store } = props;
   if (state.notice === null) return null;
@@ -71,15 +103,20 @@ function NoticeStrip(props: ChildProps): ReactElement | null {
   );
 }
 
-function MetricsStrip(props: ChildProps): ReactElement | null {
-  const { React, state } = props;
+interface MetricsProps extends ChildProps {
+  readonly open: boolean;
+  readonly onToggle: () => void;
+}
+
+function MetricsStrip(props: MetricsProps): ReactElement | null {
+  const { React, state, open, onToggle } = props;
   const payload = state.payload;
   if (payload === null) return null;
   const metrics = payload.metrics;
   const num = (value: number | null): string => (value === null ? '—' : String(value));
-  // The two numbers that call for action lead: how full the WIP control is, and how the oldest card
-  // reads against the SLE. Everything else is history and is demoted, so the strip has one scan
-  // order instead of nine equal items.
+  // Two numbers at the front: how full the WIP control is, and how the oldest card reads against
+  // the SLE. They answer *is anything stuck?* on their own; the history behind the toggle answers
+  // *how has it been going?*, which is a second question and gets a second click.
   const wipLimit = payload.dow.wip['in-progress'] + payload.dow.wip.review;
   const lead = (label: string, value: string): ReactElement =>
     React.createElement('span', { className: 'kb-metric-lead' }, React.createElement('b', null, label), ` ${value}`);
@@ -89,12 +126,13 @@ function MetricsStrip(props: ChildProps): ReactElement | null {
     'div',
     { className: 'kb-metrics', 'aria-label': 'Flow metrics' },
     lead('WIP', `${metrics.wip}/${wipLimit}`),
-    lead('Oldest', `${num(metrics.ageing.oldestDays)}d / ${metrics.sle.days}d SLE · ${metrics.ageing.count} past`),
-    rest('Cycle', `median ${num(metrics.cycle.medianDays)}d`),
-    rest('Throughput', `${metrics.throughput.days7}/7d · ${metrics.throughput.days30}/30d`),
+    lead('Oldest', `${num(metrics.ageing.oldestDays)}d vs ${metrics.sle.days}d SLE · ${metrics.ageing.count} past`),
+    disclosureButton(React, { label: 'More metrics', open, action: 'more-metrics', onToggle }),
+    open ? rest('Cycle', `median ${num(metrics.cycle.medianDays)}d`) : null,
+    open ? rest('Throughput', `${metrics.throughput.days7}/7d · ${metrics.throughput.days30}/30d`) : null,
     // `p85` is deliberately absent: nine items in one 12px row is a wall, and the 85th percentile
     // of a board this size is noise beside the median. The full metrics stay in `kanban_metrics`.
-    rest('SLE', `${formatPercent(metrics.sle.p)}% ≤ ${metrics.sle.days}d (${metrics.sle.source})`)
+    open ? rest('SLE', `${formatPercent(metrics.sle.p)}% ≤ ${metrics.sle.days}d (${metrics.sle.source})`) : null
   );
 }
 
@@ -164,10 +202,28 @@ function CardView(props: CardProps): ReactElement {
   // The top row holds the id, the priority code and the age inside a 236px lane, so it keeps the
   // numbers and the words move down to the chip row, which wraps without breaking a token. The words
   // are what keep the meaning alive without colour (amber cannot carry small text on white: 2.15:1
-  // measured), so they are relocated, never dropped.
+  // measured), so where a colour carries a state the word stays — relocated, never dropped. What the
+  // chip row no longer repeats is the card's filing: class, assignee, project, sprint live in the
+  // drawer, which has room to print them in full.
   const age = formatAge(days);
   const priorityLabel = priorityWord(task.priority);
   const ageLabel = band === 'fresh' ? null : band;
+  /**
+   * The chip row carries only what asks for a decision: a blocker, a P0/P1 word, an age band that
+   * has left `fresh`, and `expedite` — the one class of service with a consequence, since it is the
+   * only exception to a WIP limit. Class, assignee, project and sprint are facts about the card,
+   * not about what to do next, and the drawer already prints every one of them.
+   *
+   * `expedite` stays although it is a class, because the card's other expedite signal is a red
+   * hairline — and a state that is only a colour is not a state a reader can be relied on to see.
+   */
+  const chips: ReactElement[] = [];
+  if (task.blockedReason !== null) chips.push(React.createElement('span', { className: 'kb-chip', key: 'blocked' }, 'blocked'));
+  if (priorityLabel !== null) chips.push(React.createElement('span', { className: 'kb-chip', key: 'priority' }, priorityLabel));
+  if (ageLabel !== null) chips.push(React.createElement('span', { className: 'kb-chip', key: 'age' }, ageLabel));
+  if (task.classOfService === 'expedite') {
+    chips.push(React.createElement('span', { className: 'kb-chip', key: 'class' }, classLabel(task)));
+  }
 
   const onKeyDown = (event: { key: string; altKey: boolean; preventDefault: () => void }): void => {
     if (event.key === 'Enter') {
@@ -228,17 +284,8 @@ function CardView(props: CardProps): ReactElement {
       React.createElement('span', { className: `kb-age kb-age-${band}` }, age)
     ),
     React.createElement('div', { className: 'kb-card-title' }, task.title),
-    React.createElement(
-      'div',
-      { className: 'kb-card-meta' },
-      priorityLabel === null ? null : React.createElement('span', { className: 'kb-chip' }, priorityLabel),
-      ageLabel === null ? null : React.createElement('span', { className: 'kb-chip' }, ageLabel),
-      task.classOfService === 'standard' ? null : React.createElement('span', { className: 'kb-chip' }, classLabel(task)),
-      task.blockedReason === null ? null : React.createElement('span', { className: 'kb-chip' }, 'blocked'),
-      task.assignee === null ? null : React.createElement('span', { className: 'kb-chip' }, task.assignee),
-      task.project === null ? null : React.createElement('span', { className: 'kb-chip' }, task.project),
-      task.sprintId === null ? null : React.createElement('span', { className: 'kb-chip kb-chip-kb' }, task.sprintId)
-    )
+    // No chips, no empty row: a card with nothing to flag is id, priority code, age and title.
+    chips.length === 0 ? null : React.createElement('div', { className: 'kb-card-meta' }, ...chips)
   );
 }
 
@@ -374,6 +421,7 @@ function Drawer(props: DrawerProps): ReactElement {
   const [dropReason, setDropReason] = React.useState('');
   const [blockReason, setBlockReason] = React.useState('');
   const [position, setPosition] = React.useState(String(task.position));
+  const [moreOpen, setMoreOpen] = React.useState(false);
   const [exceptionOpen, setExceptionOpen] = React.useState(false);
   const [exceptionReason, setExceptionReason] = React.useState('');
   const [exceptionTarget, setExceptionTarget] = React.useState<State>(moveTargets(task.state)[0] ?? task.state);
@@ -412,10 +460,35 @@ function Drawer(props: DrawerProps): ReactElement {
     void store.select(null);
   };
 
-  // `dropped` is reached through Drop and its reason, not through this menu, so it is not offered.
-  const moveButtons = (['backlog', 'ready', 'in-progress', 'review', 'done'] as State[]).filter(
-    (target) => target !== task.state
-  );
+  /**
+   * The drawer's move set.
+   *
+   * **One primary move**, the next state in the board's own order — that is the answer to "what
+   * happens to this card next?" nine times in ten. Every other target is one click behind `More…`
+   * beside it, so nothing became unreachable; it only stopped competing. `dropped` is not in this
+   * menu at all: a drop is reached through Drop and its reason, at the bottom.
+   */
+  const here = BOARD_STATES.indexOf(task.state);
+  const next = here >= 0 && here + 1 < BOARD_STATES.length ? (BOARD_STATES[here + 1] as State) : null;
+  const otherMoves = BOARD_STATES.filter((target) => target !== task.state && target !== next);
+  const moveButton = (target: State): ReactElement =>
+    React.createElement(
+      'button',
+      {
+        key: target,
+        className: 'kb-btn',
+        type: 'button',
+        // `→ ready` is unreadable out of context; the label says which card and where.
+        'aria-label': `Move ${task.id} to ${STATE_LABEL[target]}`,
+        onClick: () => {
+          // The board's one live region carries the intent; a refusal follows through the notice
+          // strip, so this is never the last word on a move the host rejected.
+          onAnnounce(`moving ${task.id} to ${STATE_LABEL[target]}`);
+          void store.move(task.id, target);
+        },
+      },
+      `→ ${STATE_LABEL[target]}`
+    );
   const exceptionTargets: readonly State[] = moveTargets(task.state).filter((target) => target !== 'dropped');
   const exceptionTo = exceptionTargets.includes(exceptionTarget)
     ? exceptionTarget
@@ -448,7 +521,20 @@ function Drawer(props: DrawerProps): ReactElement {
     ),
     task.blockedReason === null
       ? null
-      : React.createElement('div', { className: 'kb-notice kb-notice-refusal' }, `Blocked: ${task.blockedReason}`),
+      : React.createElement(
+          'div',
+          { className: 'kb-notice kb-notice-refusal' },
+          React.createElement('span', null, `Blocked: ${task.blockedReason}`),
+          React.createElement('span', { className: 'kb-spacer' }),
+          // The way out sits on the notice that names the stuck state. A blocked card is the one
+          // case where the single obvious move is not a move at all, so the fix is not buried in
+          // `More…` with the action that caused it.
+          React.createElement(
+            'button',
+            { className: 'kb-btn', type: 'button', 'data-action': 'unblock', onClick: () => void store.unblock(task.id) },
+            'Unblock'
+          )
+        ),
     // Priority and class of service are the human's to set (PRODUCT.md), and `kanban_update` can do
     // it; the panel sends its own actor and renders whatever refusal comes back.
     React.createElement(
@@ -497,189 +583,191 @@ function Drawer(props: DrawerProps): ReactElement {
       React.createElement(
         'div',
         { className: 'kb-bar' },
-        ...moveButtons.map((target) =>
-          React.createElement(
-            'button',
-            {
-              key: target,
-              className: 'kb-btn',
-              type: 'button',
-              // `→ ready` is unreadable out of context; the label says which card and where.
-              'aria-label': `Move ${task.id} to ${STATE_LABEL[target]}`,
-              onClick: () => {
-                // The board's one live region carries the intent; a refusal follows through the
-                // notice strip, so this is never the last word on a move the host rejected.
-                onAnnounce(`moving ${task.id} to ${STATE_LABEL[target]}`);
-                void store.move(task.id, target);
-              },
-            },
-            `→ ${STATE_LABEL[target]}`
-          )
-        ),
-        // Reordering is not pointer-only: a position is a number, and `kanban_move.toPosition` is
-        // the same number.
-        React.createElement('span', { className: 'kb-dim' }, 'position'),
-        React.createElement('input', {
-          className: 'kb-input',
-          type: 'number',
-          step: 1,
-          'data-field': 'position',
-          'aria-label': `Position of ${task.id} in ${STATE_LABEL[task.state]}`,
-          value: position,
-          onChange: (event: { target: { value: string } }) => setPosition(event.target.value),
-        }),
-        React.createElement(
-          'button',
-          {
-            className: 'kb-btn',
-            type: 'button',
-            'data-action': 'set-position',
-            disabled: !positionReady,
-            onClick: () => {
-              onAnnounce(`${task.id} moved to position ${String(positionValue)}`);
-              void store.move(task.id, task.state, undefined, { position: positionValue });
-            },
-          },
-          'Set position'
-        ),
-        React.createElement(
-          'button',
-          {
-            className: 'kb-btn',
-            type: 'button',
-            'data-action': 'exception',
-            'aria-expanded': exceptionOpen,
-            onClick: () => setExceptionOpen(!exceptionOpen),
-          },
-          'Exception…'
-        )
+        next === null ? null : moveButton(next),
+        disclosureButton(React, {
+          label: 'More…',
+          open: moreOpen,
+          action: 'more',
+          // The visible text stays inside the accessible name, so speech control still finds it.
+          ariaLabel: `More… actions for ${task.id}`,
+          onToggle: () => setMoreOpen(!moreOpen),
+        })
       ),
-      // The exception is the one path an agent has and a drag does not, so it is explicit, needs a
-      // written reason, and still goes through `checkMoveLocally` and then the host.
-      exceptionOpen
+      moreOpen
         ? React.createElement(
             'div',
-            { className: 'kb-bar' },
-            React.createElement('span', { className: 'kb-dim' }, 'except'),
+            { className: 'kb-fold' },
+            // Every other target stays here, so `More…` widens the choice rather than replacing it.
+            otherMoves.length === 0
+              ? null
+              : React.createElement('div', { className: 'kb-bar' }, ...otherMoves.map(moveButton)),
+            // Reordering is not pointer-only: a position is a number, and `kanban_move.toPosition`
+            // is the same number.
             React.createElement(
-              'select',
-              {
+              'div',
+              { className: 'kb-bar' },
+              React.createElement('span', { className: 'kb-dim' }, 'position'),
+              React.createElement('input', {
                 className: 'kb-input',
-                'data-select': 'exception-target',
-                'aria-label': `Exception target for ${task.id}`,
-                value: exceptionTo,
-                onChange: (event: { target: { value: string } }) => setExceptionTarget(event.target.value as State),
-              },
-              ...exceptionTargets.map((target) =>
-                React.createElement('option', { key: target, value: target }, STATE_LABEL[target])
+                type: 'number',
+                step: 1,
+                'data-field': 'position',
+                'aria-label': `Position of ${task.id} in ${STATE_LABEL[task.state]}`,
+                value: position,
+                onChange: (event: { target: { value: string } }) => setPosition(event.target.value),
+              }),
+              React.createElement(
+                'button',
+                {
+                  className: 'kb-btn',
+                  type: 'button',
+                  'data-action': 'set-position',
+                  disabled: !positionReady,
+                  onClick: () => {
+                    onAnnounce(`${task.id} moved to position ${String(positionValue)}`);
+                    void store.move(task.id, task.state, undefined, { position: positionValue });
+                  },
+                },
+                'Set position'
               )
             ),
-            React.createElement('input', {
-              className: 'kb-input',
-              type: 'text',
-              'data-field': 'exception-reason',
-              placeholder: 'reason to except…',
-              'aria-label': 'Reason for the exception',
-              value: exceptionReason,
-              onChange: (event: { target: { value: string } }) => setExceptionReason(event.target.value),
-            }),
+            // The exception is the one path an agent has and a drag does not, so it is explicit,
+            // needs a written reason, and still goes through `checkMoveLocally` and then the host.
             React.createElement(
-              'button',
-              {
-                className: 'kb-btn',
-                type: 'button',
-                'data-action': 'except',
-                disabled: exceptionReason.trim().length === 0,
-                onClick: () => {
-                  onAnnounce(`excepting the gate for ${task.id}`);
-                  // Deliberately not cleared: if the host refuses, the human must still see the
-                  // reason they wrote rather than an empty box beside the refusal.
-                  void store.move(task.id, exceptionTo, undefined, { force: true, reason: exceptionReason.trim() });
+              'div',
+              { className: 'kb-bar' },
+              React.createElement(
+                'button',
+                {
+                  className: 'kb-btn',
+                  type: 'button',
+                  'data-action': 'exception',
+                  'aria-expanded': exceptionOpen,
+                  onClick: () => setExceptionOpen(!exceptionOpen),
                 },
-              },
-              'Move with exception'
+                'Exception…'
+              )
+            ),
+            exceptionOpen
+              ? React.createElement(
+                  'div',
+                  { className: 'kb-bar' },
+                  React.createElement('span', { className: 'kb-dim' }, 'except'),
+                  React.createElement(
+                    'select',
+                    {
+                      className: 'kb-input',
+                      'data-select': 'exception-target',
+                      'aria-label': `Exception target for ${task.id}`,
+                      value: exceptionTo,
+                      onChange: (event: { target: { value: string } }) =>
+                        setExceptionTarget(event.target.value as State),
+                    },
+                    ...exceptionTargets.map((target) =>
+                      React.createElement('option', { key: target, value: target }, STATE_LABEL[target])
+                    )
+                  ),
+                  React.createElement('input', {
+                    className: 'kb-input',
+                    type: 'text',
+                    'data-field': 'exception-reason',
+                    placeholder: 'reason to except…',
+                    'aria-label': 'Reason for the exception',
+                    value: exceptionReason,
+                    onChange: (event: { target: { value: string } }) => setExceptionReason(event.target.value),
+                  }),
+                  React.createElement(
+                    'button',
+                    {
+                      className: 'kb-btn',
+                      type: 'button',
+                      'data-action': 'except',
+                      disabled: exceptionReason.trim().length === 0,
+                      onClick: () => {
+                        onAnnounce(`excepting the gate for ${task.id}`);
+                        // Deliberately not cleared: if the host refuses, the human must still see
+                        // the reason they wrote rather than an empty box beside the refusal.
+                        void store.move(task.id, exceptionTo, undefined, {
+                          force: true,
+                          reason: exceptionReason.trim(),
+                        });
+                      },
+                    },
+                    'Move with exception'
+                  )
+                )
+              : null,
+            React.createElement(
+              'div',
+              { className: 'kb-group' },
+              React.createElement('span', { className: 'kb-dim' }, 'block'),
+              React.createElement(
+                'div',
+                { className: 'kb-bar' },
+                // A blocker is evidence: the host refuses an empty one, so the button waits for it.
+                React.createElement('input', {
+                  className: 'kb-input',
+                  type: 'text',
+                  'data-field': 'block-reason',
+                  placeholder: 'reason to block…',
+                  'aria-label': 'Reason to block',
+                  value: blockReason,
+                  onChange: (event: { target: { value: string } }) => setBlockReason(event.target.value),
+                }),
+                React.createElement(
+                  'button',
+                  {
+                    className: 'kb-btn',
+                    type: 'button',
+                    'data-action': 'block',
+                    disabled: blockReason.trim().length === 0,
+                    onClick: () => {
+                      void store.block(task.id, blockReason.trim());
+                      setBlockReason('');
+                    },
+                  },
+                  'Block'
+                )
+              )
+            ),
+            // The destructive zone, kept apart from the reversible moves above it.
+            React.createElement(
+              'div',
+              { className: 'kb-group kb-group-danger' },
+              React.createElement('span', { className: 'kb-dim' }, 'drop'),
+              React.createElement(
+                'div',
+                { className: 'kb-bar' },
+                // Dropping needs a written reason, so it is an input and not a dialog: `prompt()` is
+                // unavailable in the desktop renderer and untestable under jsdom, and the reason is
+                // evidence the board keeps forever. The button stays disabled until there is one.
+                React.createElement('input', {
+                  className: 'kb-input',
+                  type: 'text',
+                  'data-field': 'drop-reason',
+                  placeholder: 'reason to drop…',
+                  'aria-label': 'Reason to drop',
+                  value: dropReason,
+                  onChange: (event: { target: { value: string } }) => setDropReason(event.target.value),
+                }),
+                React.createElement(
+                  'button',
+                  {
+                    className: 'kb-btn',
+                    type: 'button',
+                    'data-action': 'drop',
+                    disabled: dropReason.trim().length === 0,
+                    onClick: () => {
+                      void store.drop(task.id, dropReason.trim());
+                      setDropReason('');
+                    },
+                  },
+                  'Drop'
+                )
+              )
             )
           )
         : null
-    ),
-    React.createElement(
-      'div',
-      { className: 'kb-group' },
-      React.createElement('span', { className: 'kb-dim' }, 'block'),
-      task.blockedReason === null
-        ? React.createElement(
-            'div',
-            { className: 'kb-bar' },
-            // A blocker is evidence: the host refuses an empty one, so the button waits for it.
-            React.createElement('input', {
-              className: 'kb-input',
-              type: 'text',
-              'data-field': 'block-reason',
-              placeholder: 'reason to block…',
-              'aria-label': 'Reason to block',
-              value: blockReason,
-              onChange: (event: { target: { value: string } }) => setBlockReason(event.target.value),
-            }),
-            React.createElement(
-              'button',
-              {
-                className: 'kb-btn',
-                type: 'button',
-                'data-action': 'block',
-                disabled: blockReason.trim().length === 0,
-                onClick: () => {
-                  void store.block(task.id, blockReason.trim());
-                  setBlockReason('');
-                },
-              },
-              'Block'
-            )
-          )
-        : React.createElement(
-            'div',
-            { className: 'kb-bar' },
-            React.createElement(
-              'button',
-              { className: 'kb-btn', type: 'button', 'data-action': 'unblock', onClick: () => void store.unblock(task.id) },
-              'Unblock'
-            )
-          )
-    ),
-    // The destructive zone, kept apart from the reversible moves above it.
-    React.createElement(
-      'div',
-      { className: 'kb-group kb-group-danger' },
-      React.createElement('span', { className: 'kb-dim' }, 'drop'),
-      React.createElement(
-        'div',
-        { className: 'kb-bar' },
-        // Dropping needs a written reason, so it is an input and not a dialog: `prompt()` is
-        // unavailable in the desktop renderer and untestable under jsdom, and the reason is evidence
-        // the board keeps forever. The button stays disabled until there is one.
-        React.createElement('input', {
-          className: 'kb-input',
-          type: 'text',
-          'data-field': 'drop-reason',
-          placeholder: 'reason to drop…',
-          'aria-label': 'Reason to drop',
-          value: dropReason,
-          onChange: (event: { target: { value: string } }) => setDropReason(event.target.value),
-        }),
-        React.createElement(
-          'button',
-          {
-            className: 'kb-btn',
-            type: 'button',
-            'data-action': 'drop',
-            disabled: dropReason.trim().length === 0,
-            onClick: () => {
-              void store.drop(task.id, dropReason.trim());
-              setDropReason('');
-            },
-          },
-          'Drop'
-        )
-      )
     ),
     React.createElement(ChecklistRows, { React, state, store, onAnnounce, task, gate: 'dor', items: state.payload?.dow.dor ?? [] }),
     React.createElement(ChecklistRows, { React, state, store, onAnnounce, task, gate: 'dod', items: state.payload?.dow.dod ?? [] }),
@@ -765,9 +853,14 @@ export function BoardPage(props: BoardProps): ReactElement {
   const [drag, setDrag] = React.useState<DragState | null>(null);
   const [announcement, setAnnouncement] = React.useState('');
   const [draft, setDraft] = React.useState('');
-  /** The two fields a new card carries beyond its title, so a human card can start refined. */
-  const [draftPriority, setDraftPriority] = React.useState<Priority>('p2-normal');
-  const [draftClass, setDraftClass] = React.useState<ClassOfService>('standard');
+  /**
+   * What each disclosure is showing.
+   *
+   * Two small ones — the flow history and the host line — and the state lives here rather than in a
+   * `<details>` so the revealed half renders inline, in the row it belongs to.
+   */
+  const [metricsOpen, setMetricsOpen] = React.useState(false);
+  const [hostOpen, setHostOpen] = React.useState(false);
   /** Live card nodes, so a closing drawer can return focus to the card it was opened from. */
   const cardNodes = React.useRef<Map<string, CardNode>>(new Map());
 
@@ -801,20 +894,6 @@ export function BoardPage(props: BoardProps): ReactElement {
   const task = selectedTask(state);
   const onAnnounce = (message: string): void => setAnnouncement(message);
   const child = { React, state, store, onAnnounce, cardNodes };
-  /**
-   * Add or remove one lane from the state filter.
-   *
-   * The filter is the source of truth for what is selected — **not** the lanes on screen, which a
-   * search or a saved view has already narrowed. Seeding from the visible lanes made the first chip
-   * press keep every occupied lane and drop only the one clicked, which is the inverse of a toggle.
-   */
-  const toggleState = (target: State): void => {
-    const active = state.filter.state ?? [];
-    const next = active.includes(target) ? active.filter((entry) => entry !== target) : [...active, target];
-    // A fresh object either way: handing the shared `EMPTY_FILTER` constant to the store would let a
-    // later `{ ...filter, state }` carry the previous selection back in.
-    store.setFilter(next.length === 0 ? {} : { ...state.filter, state: next });
-  };
 
   return React.createElement(
     'div',
@@ -823,13 +902,29 @@ export function BoardPage(props: BoardProps): ReactElement {
       'div',
       { className: 'kb-head' },
       React.createElement('h1', { className: 'kb-title' }, state.payload?.title ?? 'Kanban'),
+      // The count line folds the filter's own answer into the revision the board is showing, so a
+      // narrowed board says so in the header instead of in a row of its own.
       React.createElement(
         'span',
         { className: 'kb-sub' },
-        state.payload === null ? 'connecting…' : `rev ${state.payload.rev} · ${state.payload.total} cards`
+        state.payload === null
+          ? 'connecting…'
+          : filtered
+            ? `rev ${state.payload.rev} · showing ${shown} of ${total} cards`
+            : `rev ${state.payload.rev} · ${total} cards`
       ),
       React.createElement('span', { className: 'kb-spacer' }),
-      React.createElement('span', { className: 'kb-sub' }, `host ${state.origin.origin} · ${state.origin.source}`),
+      // The transport's URL is developer text. When something actually fails, the error notice
+      // below names the URL, the origin and the document, so the always-on line earned nothing.
+      disclosureButton(React, {
+        label: 'Host',
+        open: hostOpen,
+        action: 'more-host',
+        onToggle: () => setHostOpen(!hostOpen),
+      }),
+      hostOpen
+        ? React.createElement('span', { className: 'kb-sub' }, `host ${state.origin.origin} · ${state.origin.source}`)
+        : null,
       React.createElement('button', { className: 'kb-btn', type: 'button', onClick: () => void store.refresh(true) }, 'Refresh')
     ),
     React.createElement(
@@ -844,6 +939,10 @@ export function BoardPage(props: BoardProps): ReactElement {
         onChange: (event: { target: { value: string } }) =>
           store.setFilter({ ...state.filter, search: event.target.value.length === 0 ? undefined : event.target.value }),
       }),
+      // One filter control, not two: the views below are the panel's state filtering. The chip row
+      // that used to sit here repeated the lane headers and the views, and it is gone. `All` is not
+      // one of the saved views — a board seeded with Board and Ageing has no unfiltered view — so it
+      // stays as the way back out of both, and the only way to see finished cards from the panel.
       React.createElement(
         'nav',
         { 'aria-label': 'Views', className: 'kb-bar' },
@@ -863,7 +962,13 @@ export function BoardPage(props: BoardProps): ReactElement {
         ),
         React.createElement(
           'button',
-          { className: 'kb-btn', type: 'button', 'aria-pressed': !filtered, onClick: () => store.setFilter(EMPTY_FILTER) },
+          {
+            className: 'kb-btn',
+            type: 'button',
+            'data-action': 'all',
+            'aria-pressed': !filtered,
+            onClick: () => store.setFilter(EMPTY_FILTER),
+          },
           'All'
         )
       ),
@@ -876,33 +981,9 @@ export function BoardPage(props: BoardProps): ReactElement {
         value: draft,
         onChange: (event: { target: { value: string } }) => setDraft(event.target.value),
       }),
-      // The values go in the create call, not a follow-up patch: `kanban_create` takes both, and a
-      // card with no id yet cannot be patched. An agent may pass them too — the host's rule on who
-      // may set a priority is the host's, and this panel does not pre-empt it.
-      React.createElement(
-        'select',
-        {
-          className: 'kb-input',
-          'data-select': 'new-priority',
-          'aria-label': 'New card priority',
-          value: draftPriority,
-          onChange: (event: { target: { value: string } }) => setDraftPriority(event.target.value as Priority),
-        },
-        ...PRIORITIES.map((entry) => React.createElement('option', { key: entry, value: entry }, PRIORITY_LABEL[entry]))
-      ),
-      React.createElement(
-        'select',
-        {
-          className: 'kb-input',
-          'data-select': 'new-class',
-          'aria-label': 'New card class of service',
-          value: draftClass,
-          onChange: (event: { target: { value: string } }) => setDraftClass(event.target.value as ClassOfService),
-        },
-        ...CLASSES_OF_SERVICE.map((entry) =>
-          React.createElement('option', { key: entry, value: entry }, CLASS_LABEL[entry])
-        )
-      ),
+      // Creation takes a title and nothing else. The two fields it used to carry (priority, class)
+      // are the store's defaults here — `p2-normal` / `standard`, applied by `kanban_create` — and
+      // the drawer sets both one step later, so the first row of the panel stops being four controls.
       React.createElement(
         'button',
         {
@@ -913,37 +994,10 @@ export function BoardPage(props: BoardProps): ReactElement {
           onClick: () => {
             const title = draft;
             setDraft('');
-            setDraftPriority('p2-normal');
-            setDraftClass('standard');
-            void store.create(title, { priority: draftPriority, classOfService: draftClass });
+            void store.create(title);
           },
         },
         'Add'
-      )
-    ),
-    React.createElement(
-      'div',
-      { className: 'kb-bar' },
-      React.createElement(
-        'span',
-        { className: 'kb-dim' },
-        filtered ? `showing ${shown} of ${total} cards` : `${total} cards`
-      ),
-      filtered ? React.createElement('span', { className: 'kb-spacer' }) : null,
-      filtered ? React.createElement('span', { className: 'kb-dim' }, 'state') : null,
-      ...filterableStates().map((entry) =>
-        React.createElement(
-          'button',
-          {
-            key: entry,
-            className: 'kb-btn',
-            type: 'button',
-            'data-state': entry,
-            'aria-pressed': (state.filter.state ?? []).includes(entry),
-            onClick: () => toggleState(entry),
-          },
-          STATE_LABEL[entry]
-        )
       )
     ),
     React.createElement(NoticeStrip, child),
@@ -956,7 +1010,7 @@ export function BoardPage(props: BoardProps): ReactElement {
           { className: 'kb-notice kb-notice-info' },
           `showing ${state.payload.truncated.shown} of ${state.payload.truncated.total} cards — the flow metrics cover only those`
         ),
-    React.createElement(MetricsStrip, child),
+    React.createElement(MetricsStrip, { ...child, open: metricsOpen, onToggle: () => setMetricsOpen(!metricsOpen) }),
     React.createElement('div', { className: 'kb-dim', role: 'status', 'aria-live': 'polite' }, announcement),
     state.status === 'error' && state.payload === null
       ? React.createElement(

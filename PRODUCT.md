@@ -53,10 +53,11 @@ the gate that refused the human", because that requires the rules to live below 
 
 - Nine tools (`kanban_list`, `get`, `create`, `update`, `move`, `delete`, `sprint`, `board`,
   `metrics`) plus the `kanban` skill for agents; `bin/kanban.mjs` for the human's shell.
-- Five views over one board (Board / Ageing / All), lane WIP badges, a card drawer with both
+- Three views over one board (Board / Ageing / All), lane WIP badges, a card drawer with both
   checklists, comments, and history, plus sprint and metrics surfaces.
-- **Priority and class of service are the human's** — at creation and at edit, for the human's own
-  actions and for an agent's, including a template's carried values.
+- **Priority and class of service are the human's** — editing happens in the card drawer, and
+  creation is a title with the store's defaults (`p2-normal` / `standard`); an agent may still pass
+  both to `kanban_create`, including a template's carried values.
 - WIP limits 2 (in progress) and 1 (review); expedite is human-only and the only exception to a limit.
 - Sprints are one month or less, enforced exactly; cancelling releases only unfinished cards.
 - **Constraints**: no new dependencies; TypeScript strict; the panel must never become the source of a

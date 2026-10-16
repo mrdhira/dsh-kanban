@@ -330,17 +330,14 @@ export function applyLocalMove(payload: BoardPayload, taskId: string, toState: S
   return { ...payload, tasks, counts };
 }
 
-/** Only the states a filter is asking for, for the "state" quick chips. */
-export function activeStates(filter: ViewFilter): readonly State[] {
-  return filter.state ?? [];
-}
-
-/** The states the "state" quick chips can toggle, in board order. */
-export function filterableStates(): readonly State[] {
-  return BOARD_STATES;
-}
-
-/** Is a filter asking for anything at all? */
+/**
+ * Is a filter asking for anything at all?
+ *
+ * The view buttons use this to tell "no view is active" from "a view is active": when nothing is
+ * filtered, the panel's own `All` control is the pressed one. The state quick chips and the two
+ * helpers that fed them (`activeStates`, `filterableStates`) went with the chip row in the distill
+ * pass — the views are the panel's state filtering now.
+ */
 export function hasFilter(filter: ViewFilter): boolean {
   return Object.values(filter).some((value) => value !== undefined);
 }

@@ -4,6 +4,43 @@ All notable changes to `dsh-kanban`. The version identifies the generation the a
 panel footer and `/api/kanban/health` both report the build id, which is
 `dsh-kanban/<version>+<stamp>`.
 
+## Unreleased — distill pass on the panel
+
+Dhira's verdict on the panel was *"there are too much, too complex at front, should be easy enough
+to use and direct"*, after `critique` scored *Aesthetic and Minimalist* 2/10 and the parity pass
+answered it by **adding** controls. This pass keeps every capability and removes the surface.
+
+### Removed from the front, and where it went
+
+- **The create row is a title and `Add`.** Priority and class of service are the store's defaults
+  (`p2-normal` / `standard`) at creation and are set in the card drawer, one step later, which is
+  also where an agent's `kanban_create` values can be edited. *Watch:* whether a human creating a
+  `p1` card finds the drawer in one move.
+- **The metrics strip leads with two numbers** (`WIP n/limit`, `oldest Xd vs SLE Yd`) and the
+  history — cycle median, throughput, the SLE's basis — opens behind `More metrics`. Nothing was
+  dropped: `p85` was already absent from the strip and `kanban_metrics` remains the full answer.
+- **The host diagnostic line** (`host … · __DSH_TRANSPORT__.streamBaseUrl`) is behind a `Host`
+  toggle. The error notice that replaces the lanes on a failed read still names the URL, the origin
+  and the document, which is the only moment the line was worth reading.
+- **The state-filter chip row is gone.** It repeated the lane headers, and the two saved views
+  (`Board`, `Ageing`) already filter by state. The panel's own `All` button stays: it is **not** one
+  of the seeded views, it is the only control that shows `done`, and without it choosing `Board`
+  would be a one-way door. State filtering is unchanged for `kanban_list`, `bin/kanban.mjs` and the
+  other tools.
+- **Card chips carry only what demands attention** — `blocked`, the P0/P1 word, an age band past
+  `fresh`, and `expedite`. Class, assignee, project and sprint moved to the drawer, which already
+  printed all four. `expedite` keeps its word although it is a class: its other signal on the card
+  is a red hairline, and a state that is only a colour is not a state a reader can be trusted to see.
+- **The drawer leads with one move** (the next state in board order) and hides every other target,
+  `Block`, `Drop`, the reason fields, `Exception…` and the numeric position behind `More…`. The two
+  checklists and the comment stay visible — they are the gate and the conversation. `Unblock` is the
+  exception: it sits on the notice that names the blocker, because a blocked card is the one case
+  where the obvious move is not a move.
+
+No capability became unreachable; the DOM suite pins each one (`test/client.dom.test.ts`, the `D1`
+/ `D5` / `D6` cases and the updated `A1`–`A3`, `C9`). The state-chip helpers `activeStates` and
+`filterableStates` went with the chip row. No CSS rule was orphaned.
+
 ## 1.0.0 — 2026-10-15
 
 First release. One live check is still outstanding and is stated rather than implied: **this running

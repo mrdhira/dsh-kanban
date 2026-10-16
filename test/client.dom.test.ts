@@ -38,6 +38,18 @@ const FULL_DOR = Object.fromEntries(
 /** A filter the store reports as the current view: a ready card and everything past the gate. */
 const READY_VIEW = { state: ['ready', 'in-progress', 'review', 'done'] };
 
+/**
+ * The two views every new board is seeded with, as the host sends them.
+ *
+ * `All` is deliberately **not** among them: it is the panel's own clear-the-filter control. That is
+ * why it survives the distill pass — without it, choosing `Board` would be a one-way door and the
+ * finished cards would be unreachable from the panel.
+ */
+const SEEDED_VIEWS = [
+  { id: 'board', name: 'Board', description: 'everything still moving', filter: { state: ['backlog', 'ready', 'in-progress', 'review'] } },
+  { id: 'ageing', name: 'Ageing', description: 'started, not finished', filter: { state: ['in-progress', 'review'] } },
+];
+
 /** The board the DOM tests render: one refined backlog card, one ready, two in progress, one done. */
 function fixture(): Record<string, unknown> {
   const payload = boardPayload();
@@ -117,26 +129,39 @@ test('a lane past its limit says so', async () => {
   view.unmount();
 });
 
-test('the header names the host origin and the revision it is showing', async () => {
+test('the header names the revision it is showing, and the host line waits behind its disclosure', async () => {
   const view = await mountBoard(loadBundle());
-  const text = view.text();
-  assert.match(text, /rev 7/);
-  assert.match(text, /host http:\/\/localhost/);
+  assert.match(view.text(), /rev 7/);
+  // The transport's URL is developer text and it does not sit in the most prominent row of a task
+  // board. The error notice below still names it, so nothing diagnostic is lost.
+  assert.equal(view.text().includes('host http://localhost'), false, 'the host line is not on the front');
+  assert.equal(view.find('[data-action="more-host"]')?.getAttribute('aria-expanded'), 'false');
+
+  await view.click('[data-action="more-host"]');
+  await flush();
+  assert.equal(view.find('[data-action="more-host"]')?.getAttribute('aria-expanded'), 'true');
+  assert.match(view.text(), /host http:\/\/localhost/);
   view.unmount();
 });
 
-test('the flow metrics are on screen, led by WIP against its limit and the oldest card', async () => {
+test('two numbers lead the metrics and the history opens behind one control', async () => {
   const view = await mountBoard(loadBundle());
-  const text = view.text();
-  // WIP-vs-limit and oldest-vs-SLE lead; the history is demoted, and `p85` has left the strip so
-  // nine equal 12px items stop being a wall.
-  assert.match(text, /WIP 2\/3/);
-  assert.match(text, /Oldest 1\.5d \/ 3d SLE/);
-  assert.match(text, /Cycle median 3d/);
-  assert.match(text, /Throughput 1\/7d · 1\/30d/);
-  assert.match(text, /SLE 85% ≤ 3d/);
-  assert.equal(text.includes('p85'), false, 'the 85th percentile is not in the strip any more');
+  const front = view.text();
+  assert.match(front, /WIP 2\/3/);
+  assert.match(front, /Oldest 1\.5d vs 3d SLE/);
   assert.equal(view.findAll('.kb-metric-lead').length, 2, 'exactly two items lead the scan');
+  assert.equal(front.includes('Cycle'), false, 'the history is not competing with them');
+  assert.equal(front.includes('Throughput'), false);
+  assert.equal(front.includes('p85'), false, 'the 85th percentile is not in the strip at all');
+  assert.equal(view.find('[data-action="more-metrics"]')?.getAttribute('aria-expanded'), 'false');
+
+  await view.click('[data-action="more-metrics"]');
+  await flush();
+  assert.equal(view.find('[data-action="more-metrics"]')?.getAttribute('aria-expanded'), 'true');
+  const opened = view.text();
+  assert.match(opened, /Cycle median 3d/);
+  assert.match(opened, /Throughput 1\/7d · 1\/30d/);
+  assert.match(opened, /SLE 85% ≤ 3d/);
   view.unmount();
 });
 
@@ -410,20 +435,26 @@ test('the active view button says so, and the count says how much is hidden', as
   view.unmount();
 });
 
-test('a state chip narrows the board, presses itself, and releases on a second click', async () => {
-  const view = await mountBoard(loadBundle());
-  assert.equal(view.find('[data-state="in-progress"]')?.getAttribute('aria-pressed'), 'false');
+test('the state chip row is gone, and the views are the panel filter', async () => {
+  const view = await mountBoard(loadBundle(), { ...fixture(), views: SEEDED_VIEWS });
+  // The row repeated what the lane headers already said. It is not hidden, it is absent.
+  assert.equal(view.findAll('[data-state]').length, 0, 'no per-state chip row');
+  assert.equal(view.find('[data-lane="review"] .kb-lane-name')?.textContent, 'Review', 'the lanes still name every state');
+  assert.equal(view.has('[data-card="T-005"]'), true, 'the unfiltered board shows the finished card');
 
-  await view.click('[data-state="in-progress"]');
+  await view.click('nav[aria-label="Views"] button[title="everything still moving"]');
   await flush();
-  assert.equal(view.find('[data-state="in-progress"]')?.getAttribute('aria-pressed'), 'true');
-  assert.match(view.text(), /showing 2 of 5 cards/);
-  assert.equal(view.has('[data-card="T-001"]'), false, 'the card outside the lane is filtered out');
+  const board = view.find('nav[aria-label="Views"] button[title="everything still moving"]');
+  assert.equal(board?.getAttribute('aria-pressed'), 'true', 'the view presses itself');
+  assert.equal(view.has('[data-card="T-005"]'), false, 'Board filters the done lane out');
+  assert.match(view.text(), /showing 4 of 5 cards/, 'and the header says how much is hidden');
 
-  await view.click('[data-state="in-progress"]');
+  // `All` is the way back out. It is not redundant with the saved views: it is the only one that
+  // shows `done`, so deleting it would put finished cards out of the panel's reach.
+  await view.click('[data-action="all"]');
   await flush();
-  assert.equal(view.find('[data-state="in-progress"]')?.getAttribute('aria-pressed'), 'false');
-  assert.equal(view.has('[data-card="T-001"]'), true, 'and releasing the chip brings the board back');
+  assert.equal(view.find('[data-action="all"]')?.getAttribute('aria-pressed'), 'true');
+  assert.equal(view.has('[data-card="T-005"]'), true, 'the finished card is back');
   view.unmount();
 });
 
@@ -457,21 +488,23 @@ test('a forced move to the same state still needs its reason, as the host requir
 });
 
 test('a saved view stays pressed when the same states are chosen in another order', async () => {
-  // The chips append in board order, so they build `['ready','done']` while the view below was saved
-  // as `['done','ready']`. Before `sameFilter` sorted the arrays, the view's button read
-  // `aria-pressed="false"` and the toolbar highlighted nothing while showing exactly that board.
+  // Two views asking the same question with their arrays in a different order. `sameFilter`
+  // canonicalises, so choosing one reads both as pressed; before it sorted the arrays, neither
+  // matched and the toolbar highlighted nothing. (The chip row that used to build the other order
+  // by hand is gone, so the two views now stand in for it.)
   const view = await mountBoard(loadBundle(), {
     ...fixture(),
-    views: [{ id: 'v-rev', name: 'Reverse', description: 'done and ready, listed the other way', filter: { state: ['done', 'ready'] } }],
+    views: [
+      { id: 'v-rev', name: 'Reverse', description: 'done and ready, listed the other way', filter: { state: ['done', 'ready'] } },
+      { id: 'v-fwd', name: 'Forward', description: 'ready and done, listed the other way round', filter: { state: ['ready', 'done'] } },
+    ],
   });
 
-  await view.click('[data-state="ready"]');
-  await flush();
-  await view.click('[data-state="done"]');
+  await view.click('nav[aria-label="Views"] button[title="done and ready, listed the other way"]');
   await flush();
 
   const pressed = view.findAll('nav[aria-label="Views"] .kb-btn[aria-pressed="true"]').map((node) => node.textContent);
-  assert.deepEqual(pressed, ['Reverse'], 'the same set of states, whatever order it was built in');
+  assert.deepEqual(pressed, ['Reverse', 'Forward'], 'the same set of states, whatever order it was written in');
   view.unmount();
 });
 
@@ -619,21 +652,23 @@ test('every CSS variable the panel uses is a theme token the app actually provid
 
 // ------------------------------------------------------------------ pass 2: parity, legibility, craft
 
-test('A1: a new card carries a priority and a class of service from the bar', async () => {
+test('A1: creation is a title and Add, and the card takes the store defaults', async () => {
   const view = await mountBoard(loadBundle());
   await view.type('input[aria-label="New card title"]', 'a human card');
-  await view.type('[data-select="new-priority"]', 'p1-high');
-  await view.type('[data-select="new-class"]', 'fixed-date');
   await view.click('[data-action="create"]');
   await flush();
 
   const body = lastMutation()?.body as Record<string, unknown> | undefined;
   assert.equal(body?.op, 'create');
-  assert.deepEqual(body?.input, { title: 'a human card', priority: 'p1-high', classOfService: 'fixed-date' });
+  // The create row is a title and Add. Priority and class are the host's defaults here
+  // (`p2-normal` / `standard`), and the drawer is where the human sets them.
+  assert.deepEqual(body?.input, { title: 'a human card' });
+  assert.equal(view.has('[data-select="new-priority"]'), false, 'no priority control in the create row');
+  assert.equal(view.has('[data-select="new-class"]'), false, 'no class control in the create row');
   view.unmount();
 });
 
-test('A1: the drawer patches priority and class of service through the host', async () => {
+test('A1: the drawer still sets priority and class of service, and they reach the host', async () => {
   const view = await mountBoard(loadBundle());
   await view.click('[data-card="T-003"]');
   await flush();
@@ -654,9 +689,14 @@ test('A1: the drawer patches priority and class of service through the host', as
   view.unmount();
 });
 
-test('A2: Block waits for a real reason and sends it', async () => {
+test('A2: Block waits for a real reason and sends it, one disclosure deep', async () => {
   const view = await mountBoard(loadBundle());
   await view.click('[data-card="T-003"]');
+  await flush();
+  // Blocking is rare and destructive-adjacent, so it lives behind `More…` — but it is still there,
+  // still disabled until the reason is written, and still sends what the human wrote.
+  assert.equal(view.has('[data-field="block-reason"]'), false, 'not competing with the move');
+  await view.click('[data-action="more"]');
   await flush();
   assert.equal(view.find('[data-action="block"]')?.hasAttribute('disabled'), true, 'an empty reason cannot block');
   assert.equal(view.find('[data-field="block-reason"]')?.getAttribute('placeholder'), 'reason to block…');
@@ -679,7 +719,10 @@ test('A3: Done is refused locally, then force carries a written reason through t
   await view.click('[data-card="T-003"]');
   await flush();
 
-  // T-003's Definition of Done is unticked, so the plain move never reaches the host.
+  // T-003's Definition of Done is unticked, so the plain move never reaches the host. `Done` is not
+  // the drawer's one obvious move for an in-progress card, so it is reached through `More…`.
+  await view.click('[data-action="more"]');
+  await flush();
   await view.click('[aria-label="Move T-003 to Done"]');
   await flush();
   assert.equal(lastMutation(), undefined, 'the local gate refuses before the round trip');
@@ -713,6 +756,11 @@ test('A3: reopening a Done card through the exception control sends the reason a
   await view.click('[data-card="T-005"]');
   await flush();
 
+  // A finished card has no next state, so its drawer leads with `More…` rather than a move that
+  // could only be refused.
+  assert.equal(view.has('[data-action="more"]'), true);
+  await view.click('[data-action="more"]');
+  await flush();
   await view.click('[data-action="exception"]');
   await flush();
   await view.type('[data-select="exception-target"]', 'ready');
@@ -748,6 +796,8 @@ test('A3: a forced move the host refuses still shows the message and the missing
   const view = mount(loadBundle(), loadBundle().slot('main'), { store: freshStore(loadBundle()) });
   await flush();
   await view.click('[data-card="T-003"]');
+  await flush();
+  await view.click('[data-action="more"]');
   await flush();
   await view.click('[data-action="exception"]');
   await flush();
@@ -869,13 +919,27 @@ test('C8: an empty lane is a rail, opens while a drag is live, and still takes t
   view.unmount();
 });
 
-test('C9: the drawer separates Move, Block and Drop, and exposes the position numerically', async () => {
+test('C9: the drawer leads with one move and keeps the rest of its actions behind More…', async () => {
   const view = await mountBoard(loadBundle());
   await view.click('[data-card="T-003"]');
   await flush();
-  const drawer = view.find('[data-drawer="T-003"]');
-  assert.equal(drawer?.querySelectorAll('.kb-group').length, 4, 'detail, move, block and the destructive zone');
-  assert.equal(view.has('[data-drawer="T-003"] .kb-group-danger'), true, 'Drop is set apart');
+
+  // T-003 is in progress, so the one obvious move is the next state in the board's own order.
+  assert.equal(view.find('[aria-label="Move T-003 to Review"]')?.textContent, '→ Review');
+  assert.equal(view.find('[data-action="more"]')?.getAttribute('aria-expanded'), 'false');
+  assert.equal(view.has('[data-field="position"]'), false, 'the number is not competing with the move');
+  assert.equal(view.has('[data-action="drop"]'), false, 'nor is the destructive action');
+  assert.equal(view.has('[data-action="block"]'), false);
+
+  await view.click('[data-action="more"]');
+  await flush();
+  assert.equal(view.find('[data-action="more"]')?.getAttribute('aria-expanded'), 'true');
+  // Every other target is still a button: the disclosure widens the choice, it does not replace it.
+  assert.equal(view.find('[aria-label="Move T-003 to Done"]') !== null, true);
+  assert.equal(view.find('[aria-label="Move T-003 to Backlog"]') !== null, true);
+  assert.equal(view.has('[data-action="drop"]'), true);
+  assert.equal(view.has('[data-action="block"]'), true);
+  assert.equal(view.has('[data-drawer="T-003"] .kb-group-danger'), true, 'Drop is still set apart');
 
   assert.equal(view.find('[data-field="position"]')?.getAttribute('type'), 'number');
   assert.equal((view.find('[data-field="position"]') as { value?: string } | null)?.value, '0');
@@ -889,6 +953,79 @@ test('C9: the drawer separates Move, Block and Drop, and exposes the position nu
   assert.equal(body?.op, 'move');
   assert.equal(body?.toState, 'in-progress');
   assert.equal(body?.toPosition, 4, 'the same number kanban_move.toPosition takes');
+  view.unmount();
+});
+
+test('D1: the create row is a title and Add, and nothing else', async () => {
+  const view = await mountBoard(loadBundle());
+  assert.equal(view.has('input[aria-label="New card title"]'), true);
+  assert.equal(view.has('[data-action="create"]'), true);
+  assert.equal(view.has('[data-select="new-priority"]'), false);
+  assert.equal(view.has('[data-select="new-class"]'), false);
+  // Both are still settable, in the drawer — the control moved, the capability did not.
+  await view.click('[data-card="T-002"]');
+  await flush();
+  assert.equal(view.has('[data-drawer="T-002"] [data-select="priority"]'), true);
+  assert.equal(view.has('[data-drawer="T-002"] [data-select="class"]'), true);
+  view.unmount();
+});
+
+test('D5: a card says only what demands attention, and the rest is in the drawer', async () => {
+  const payload = fixture();
+  const tasks = (payload.tasks as Record<string, unknown>[]).map((task) =>
+    task.id === 'T-002'
+      ? { ...task, assignee: 'agent:qa', project: 'dsh-kanban', sprintId: 'S-001', classOfService: 'fixed-date' }
+      : task
+  );
+  const view = await mountBoard(loadBundle(), { ...payload, tasks });
+
+  const card = view.find('[data-card="T-002"]')?.textContent ?? '';
+  assert.match(card, /card T-002/, 'the title is still the card');
+  assert.equal(card.includes('agent:qa'), false, 'no assignee chip');
+  assert.equal(card.includes('dsh-kanban'), false, 'no project chip');
+  assert.equal(card.includes('S-001'), false, 'no sprint chip');
+  assert.equal(card.includes('Fixed date'), false, 'no class chip for a class with no consequence');
+
+  // Every one of those facts is still one click away: the drawer already prints them.
+  await view.click('[data-card="T-002"]');
+  await flush();
+  const drawer = view.find('[data-drawer="T-002"]')?.textContent ?? '';
+  assert.match(drawer, /agent:qa/);
+  assert.match(drawer, /dsh-kanban/);
+  assert.match(drawer, /S-001/);
+  assert.match(drawer, /Fixed date/);
+  view.unmount();
+});
+
+test('D5: expedite keeps its word, so the red hairline is never the only signal', async () => {
+  const view = await mountBoard(loadBundle());
+  // The class is a fact about the card, not a demand on the reader — except for `expedite`, which
+  // is the one exception to a WIP limit. Its chip stays; the others moved to the drawer.
+  assert.match(view.find('[data-card="T-004"]')?.textContent ?? '', /Expedite/);
+  assert.equal((view.find('[data-card="T-003"]')?.textContent ?? '').includes('Standard'), false);
+  view.unmount();
+});
+
+test('D6: a blocked card says so, and Unblock is on the notice that names the blocker', async () => {
+  const payload = fixture();
+  const tasks = (payload.tasks as Record<string, unknown>[]).map((task) =>
+    task.id === 'T-002' ? { ...task, blockedReason: 'waiting on the host route' } : task
+  );
+  const view = await mountBoard(loadBundle(), { ...payload, tasks });
+  assert.match(view.find('[data-card="T-002"]')?.textContent ?? '', /blocked/);
+
+  await view.click('[data-card="T-002"]');
+  await flush();
+  const notice = view.find('[data-drawer="T-002"] .kb-notice-refusal');
+  assert.match(notice?.textContent ?? '', /Blocked: waiting on the host route/);
+  // A blocked card is the one case where the obvious move is not a move: the fix sits on the notice
+  // rather than behind `More…` with the action that caused it.
+  assert.equal(notice?.querySelector('[data-action="unblock"]') !== null, true);
+
+  await view.click('[data-drawer="T-002"] [data-action="unblock"]');
+  await flush();
+  const body = lastMutation()?.body as Record<string, unknown> | undefined;
+  assert.equal(body?.op, 'unblock');
   view.unmount();
 });
 
