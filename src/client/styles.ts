@@ -130,7 +130,7 @@ export const STYLES = `
 .kb-lane-over { background: var(--dsw-alias-bg-layer-2, var(--kb-bg-layer-2)); outline: 2px dashed var(--dsw-alias-label-secondary, currentColor); outline-offset: -3px; }
 /* An empty lane is a narrow slot, not a 236px void -- it still takes a drop, and it opens while a drag
    is live so the target is hittable exactly when it matters. It keeps its name on **one horizontal
-   line**: a rotated word reads as a sliver rather than a column, and at 46px no name fits across at all,
+   line**: a rotated word reads as a sliver rather than a column, and at the old 46px no name fitted across,
    so the collapse narrows the lane instead of turning the label on its side.
    The dashed edge is the panel's existing "not settled" vocabulary (.kb-skeleton, .kb-lane-over), and
    nothing depends on a fill: in light, bg-layer-1, bg-layer-2 and bg-base all resolve to the same

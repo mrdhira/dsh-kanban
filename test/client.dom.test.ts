@@ -2269,7 +2269,14 @@ test('no label is turned on its side, and a parked lane is an outlined slot on o
   // The parked lane's name used to be rotated 90 degrees. A sideways word reads as a sliver rather than
   // a column, and the name is the one thing the parked lane still communicated. Forbid the pattern
   // rather than the instance: no rule may turn text vertical, whatever selector does it.
-  assert.equal(/writing-mode:\s*vertical/.test(styles), false, 'no rule may set a vertical writing mode');
+  // Every appearance, not just the ones spelled "vertical": sideways-lr and sideways-rl turn text too,
+  // and a guard that names two of four spellings is a guard that gets walked around.
+  const modes = [...styles.matchAll(/writing-mode:\s*([^;}\s]+)/g)].map((match) => (match[1] as string));
+  assert.deepEqual(
+    [...new Set(modes)],
+    ['horizontal-tb'],
+    'the only writing mode in the sheet is horizontal',
+  );
   assert.match(styles, /\.kb-lane-empty \{[^}]*border-style: dashed/, 'the parked lane is outlined as a slot');
   assert.equal(
     /\.kb-lane-empty \.kb-lane-head \{ flex-direction: column/.test(styles),

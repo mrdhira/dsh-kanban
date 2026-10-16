@@ -447,9 +447,10 @@ function Lane(props: LaneProps): ReactElement {
   const classes = ['kb-lane'];
   if (isOver) classes.push('kb-lane-over');
   if (column.over) classes.push('kb-lane-over-limit');
-  // A lane with nothing in it is a rail, not a column: four empty lanes holding 236px each is what
-  // forces the sideways scroll to scroll for nothing. It opens up again the moment a drag starts,
-  // because a drop target you cannot hit is not a drop target.
+  // A lane with nothing in it narrows to an outlined slot, not a column: four empty lanes holding 236px
+  // each is what forces the sideways scroll to scroll for nothing. It keeps its name on one horizontal
+  // line -- a rotated word reads as a sliver, and at the old 46px no name fit across at all -- and it
+  // opens up again the moment a drag starts, because a drop target you cannot hit is not a drop target.
   if (column.cards.length === 0) classes.push('kb-lane-empty');
   if (column.cards.length === 0 && drag !== null) classes.push('kb-lane-awake');
   // The accessible name has to say what the eye is given. The header prints `1/5` and, past the cap,
