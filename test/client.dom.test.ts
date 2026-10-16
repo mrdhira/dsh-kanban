@@ -583,6 +583,168 @@ test('P1.1: Alt+→ at the end of the board announces it, and Alt+← from a dro
   view.unmount();
 });
 
+// ------------------------------------------------------------------ the Dropped lane refuses, and stages
+
+/**
+ * Dropping onto Dropped, both halves of the decision.
+ *
+ * The defect: the lane highlighted as a legal target, `onDrop` sent `store.move(id, 'dropped', index)`
+ * with no reason, and `checkMoveLocally` — like the host's `policy.checkMove` — refused a drop without
+ * one. So the gesture was accepted, the card snapped back, and the refusal named a field in a drawer
+ * nobody had opened. Dhira chose both halves of the answer: the lane stops claiming the drop is legal,
+ * and the same gesture opens the drawer with the drop staged and the reason field focused.
+ */
+test('D1: the Dropped lane draws no legal-target treatment for a card hovering it', async () => {
+  const view = await mountBoard(loadBundle());
+  await view.dragStart('[data-card="T-003"]');
+  await view.dragOver('[data-lane="dropped"]', 5);
+  // Pre-fix this read `true`: `isDropAllowed` said every lane accepts every drag, so Dropped lit up
+  // for a drop that could only ever be refused.
+  assert.equal(
+    view.find('[data-lane="dropped"]')?.className.includes('kb-lane-over'),
+    false,
+    'the lane that cannot complete the move does not offer it'
+  );
+  // The same predicate still lights a legal lane, so the case above is not passing because nothing
+  // lights at all: this is the control that keeps "no highlight" meaningful.
+  await view.dragOver('[data-lane="review"]', 5);
+  assert.equal(view.find('[data-lane="review"]')?.className.includes('kb-lane-over'), true, 'review still accepts');
+  assert.equal(view.find('[data-lane="dropped"]')?.className.includes('kb-lane-over'), false, 'and dropped still does not');
+  assert.equal(lastMutation(), undefined, 'a dragover is not a move');
+  view.unmount();
+});
+
+test('D2: a drag onto Dropped sends nothing, and stages the drop in that card’s drawer', async () => {
+  const view = await mountBoard(loadBundle());
+  await view.drag('[data-card="T-003"]', '[data-lane="dropped"]', 5);
+  await flush();
+
+  // Pre-fix this was a `move` with `toState: dropped` and no reason — the mutation the host refuses.
+  assert.equal(lastMutation(), undefined, 'the gesture sends no move at all');
+  assert.equal(view.has('[data-drawer="T-003"]'), true, 'the drawer opens for the dragged card');
+  assert.equal(
+    view.find('[data-drawer="T-003"]')?.getAttribute('data-staged'),
+    'dropped',
+    'and it says a drop is staged, not merely open'
+  );
+  assert.equal(view.has('[data-drawer="T-003"] [data-action="drop"]'), true, 'the destructive group is revealed for it');
+  assert.equal(view.has('[data-drawer="T-003"] [data-field="drop-reason"]'), true, 'and so is the reason field');
+  assert.equal(view.isFocused('[data-drawer="T-003"] [data-field="drop-reason"]'), true, 'the field takes focus: the reason is what is missing');
+  assert.equal(
+    view.find('[data-drawer="T-003"] [data-action="drop"]')?.hasAttribute('disabled'),
+    true,
+    'nothing is sent until a reason is written'
+  );
+  assert.match(view.text(), /the only way a card is moved to Dropped is a confirmed move carrying a reason/);
+  assert.equal(view.find('[data-lane="dropped"]')?.querySelectorAll('[data-card]').length, 1, 'the dragged card did not land in Dropped');
+  view.unmount();
+});
+
+test('D3: confirming the staged drop sends the move to dropped with the reason, and the card lands there', async () => {
+  // T-002, the Ready card: `dropped` is legal from any state but the two the fixture leaves unticked
+  // (T-003 is missing its Definition of Done, T-001 its Ready checks), so the confirmed drop is the
+  // one gate that actually runs here rather than a second refusal.
+  // This case is about where the card lands after the write, so the fake host has to answer the
+  // post-write read honestly. The shared fixture answers every `/board` with the same rev-7 payload,
+  // which put the pre-move card back over the optimistic one and made the assertion below impossible
+  // for a reason that has nothing to do with the drop. A 304 after the mutation is the host saying
+  // "nothing changed since your rev" — true here — and the panel's own optimistic payload is then
+  // what is on screen, which is the behaviour under test.
+  const payload = fixture();
+  let mutations = 0;
+  setFetch((call) => {
+    if (call.url.includes('/board')) {
+      return mutations === 0
+        ? { status: 200, body: { ok: true, board: payload, rev: payload.rev } }
+        : { status: 304, body: undefined };
+    }
+    if (call.url.includes('/mutate')) {
+      mutations += 1;
+      return { status: 200, body: { ok: true, rev: Number(payload.rev) + 1, result: {} } };
+    }
+    if (call.url.includes('/task/')) return { status: 200, body: { ok: true, task: null, comments: [], events: [] } };
+    return { status: 404, body: {} };
+  });
+  const view = mount(loadBundle(), loadBundle().slot('main'), { store: freshStore(loadBundle()) });
+  await flush();
+
+  await view.drag('[data-card="T-002"]', '[data-lane="dropped"]', 5);
+  await flush();
+
+  await view.type('[data-drawer="T-002"] [data-field="drop-reason"]', 'superseded by T-004');
+  await flush();
+  assert.equal(
+    view.find('[data-drawer="T-002"] [data-action="drop"]')?.hasAttribute('disabled'),
+    false,
+    'the control is live once the reason exists'
+  );
+  await view.click('[data-drawer="T-002"] [data-action="drop"]');
+  await flush();
+
+  const mutation = lastMutation();
+  assert.equal(mutation?.body.op, 'move');
+  assert.equal(mutation?.body.id, 'T-002');
+  assert.equal(mutation?.body.toState, 'dropped');
+  assert.equal(mutation?.body.reason, 'superseded by T-004', 'the reason the gate asked for is what travels');
+  assert.equal(view.has('[data-lane="dropped"] [data-card="T-002"]'), true, 'and the card is in the Dropped lane');
+  view.unmount();
+});
+
+test('D4: a same-lane drop onto Dropped sends nothing and stages nothing', async () => {
+  const view = await mountBoard(loadBundle());
+  await view.drag('[data-card="T-006"]', '[data-lane="dropped"]', 5);
+  await flush();
+  assert.equal(lastMutation(), undefined, 'a card already there has nowhere to go');
+  assert.equal(view.has('[data-drawer="T-006"]'), false, 'and there is no drop to stage');
+  view.unmount();
+});
+
+test('D5: a drop onto the lane the card already sits in is a no-op, not a same-state mutation', async () => {
+  const view = await mountBoard(loadBundle());
+  await view.drag('[data-card="T-006"]', '[data-lane="dropped"]', 5);
+  await flush();
+  assert.equal(lastMutation(), undefined, 'a card already there has nowhere to go');
+  assert.equal(view.has('[data-drawer="T-006"]'), false, 'and there is no drop to stage');
+  view.unmount();
+});
+
+test('D6: the drawer move button into Dropped stages instead of sending a reasonless move', async () => {
+  const view = await mountBoard(loadBundle());
+  await view.click('[data-card="T-005"]');
+  await flush();
+  await view.click('[data-action="more"]');
+  await flush();
+  await view.click('[aria-label="Move T-005 to Dropped"]');
+  await flush();
+
+  const sent: RecordedCall[] = recorded().filter((call) => call.url.includes('/mutate'));
+  assert.equal(sent.length, 0, 'no move leaves the panel without the reason the gate requires');
+  assert.equal(
+    sent.filter((call) => call.body['toState'] === 'dropped' && call.body['reason'] === undefined).length,
+    0,
+    'and none of them is a reasonless move to dropped'
+  );
+  assert.equal(view.find('[data-drawer="T-005"]')?.getAttribute('data-staged'), 'dropped', 'the drawer stages it instead');
+  view.unmount();
+});
+
+test('D7: the keyboard path into Dropped stages the same drawer rather than sending a reasonless move', async () => {
+  // `Alt+→` on a done card targets `dropped`, and the keyboard has no more of a reason than the
+  // pointer does. The rule is about the target, not the input device: it stages.
+  const view = await mountBoard(loadBundle());
+  await view.focus('[data-card="T-005"]');
+  await view.key('[data-card="T-005"]', 'ArrowRight', { altKey: true });
+  await flush();
+  assert.equal(lastMutation(), undefined, 'no move is sent');
+  assert.equal(view.has('[data-drawer="T-005"]'), true, 'the drawer opens for the card');
+  assert.equal(view.find('[data-drawer="T-005"]')?.getAttribute('data-staged'), 'dropped', 'with the drop staged');
+  assert.equal(view.has('[data-drawer="T-005"] [data-field="drop-reason"]'), true, 'and the reason field is there to take it');
+  // The keyboard user asked for the card, not for a text box, so focus stays on the drawer the
+  // keyboard path put it in; `Tab` reaches the field from there like any other control in the region.
+  assert.equal(view.isFocused('[data-drawer="T-005"]'), true, 'the keyboard keeps its own place in the drawer');
+  view.unmount();
+});
+
 test('the drawn columns are every state in board order, whatever the filter names', () => {
   // The rule at the level where it is decided, now that no filter can change the lane list: the
   // filter narrows cards, never lanes. This is what keeps "view all" literal.

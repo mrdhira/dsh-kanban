@@ -67,24 +67,43 @@ export function keyboardTarget(from: State, direction: 'left' | 'right'): State 
 }
 
 /**
+ * Whether a drop on this column is **staged in the drawer instead of sent**.
+ *
+ * One rule, read by both halves of the affordance so they can never drift: `isDropAllowed` below
+ * (does the lane light up and accept the gesture?) and the panel's `moveOrStage` (what happens
+ * when the gesture lands?). A move to `dropped` needs a written reason — `checkMoveLocally` says so
+ * in this half and `policy.checkMove` says so on the host — and a drag carries no reason, so the
+ * gesture can never complete it. Rather than let the lane highlight as a legal target and hand the
+ * store a move the gate will refuse after the card has already snapped back, the gesture opens the
+ * card's drawer with the drop staged and the reason field focused; the human writes the reason
+ * there and confirms.
+ *
+ * A card that is *already* dropped has nowhere to go and nothing to stage: `from === to` is a
+ * no-op, which is why it is excluded first.
+ */
+export function stagesInsteadOfMoving(from: State, to: State): boolean {
+  return to === 'dropped' && from !== 'dropped';
+}
+
+/**
  * Whether a card may be dropped on a column at all, for the lane's hover styling.
  *
  * Kept because it is the code that decides the affordance `Lane` draws, not a test-only stub: the
- * lane lights up only for a drop this allows. Today every lane the board draws accepts every drag —
- * the gates decide, not the geometry — so the visible behaviour is "every lane a card is over is
- * lit", which is the pinned statement in `test/board.test.ts`. Since the board draws every state,
- * `dropped` is one of those lanes and a drag onto it is the pointer's Drop — the gates still ask for
- * the written reason the drawer's Drop control asks for, because `policy.checkMove` requires one on
- * the host side. A card already there is a no-op, not a refusal, which is why `from === to` passes
- * first.
+ * lane lights up only for a drop this allows. Every lane the board draws accepts every drag **except
+ * Dropped** — the gates decide, not the geometry, and "cannot leave the backlog without the DoR" is
+ * the useful refusal that geometry must not pre-empt. Dropped is the one exception, because a drag
+ * cannot carry the reason the gate requires: a drag onto it is staged in the drawer instead, so the
+ * lane must not paint the legal-target treatment for a drop that will not be sent. One predicate,
+ * both effects: this and `stagesInsteadOfMoving` are read by the highlight and the drop alike, so
+ * the affordance cannot promise what the drop does not do.
  */
 export function isDropAllowed(from: State, to: State): boolean {
   if (from === to) return true;
   const fromIndex = BOARD_STATES.indexOf(from);
   const toIndex = BOARD_STATES.indexOf(to);
   if (fromIndex < 0 || toIndex < 0) return false;
-  // Any column is a legal target — the gates decide, not the geometry — so the lane always
-  // accepts the drop and the refusal comes back with a reason. Refusing by geometry would hide
-  // why, and "cannot leave the backlog without the DoR" is the useful message.
-  return true;
+  // Any other column is a legal target — the gates decide, not the geometry — so the lane accepts
+  // the drop and a refusal comes back with a reason. Dropped is the one lane that does not: see
+  // `stagesInsteadOfMoving`.
+  return !stagesInsteadOfMoving(from, to);
 }

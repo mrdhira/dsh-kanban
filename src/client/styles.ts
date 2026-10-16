@@ -93,6 +93,11 @@ export const STYLES = `
 /* One action group per concern, so a reversible move never sits unlabelled beside Drop. */
 .kb-group { display: flex; flex-direction: column; gap: 3px; }
 .kb-group-danger { border-top: 1px solid var(--dsw-alias-border-l1, var(--kb-border-l1)); padding-top: 7px; }
+/* A staged drop: a drag (or a keyboard move) landed on Dropped, the reason it cannot carry is the only
+   thing missing, and this group is where it is written. The tint is the app's raised tier -- the same
+   device a hovered control and a lane a card is over use -- never a colour, so it survives both themes
+   and a greyscale screenshot, and the staged text inside it is what actually says why. */
+.kb-group-danger.kb-staged { background: var(--dsw-alias-bg-layer-2, var(--kb-bg-layer-2)); border-radius: var(--kb-radius-control, 7px); padding: 7px; }
 /* A disclosure's toggle names what it reveals, and its 'aria-expanded' attribute is its state. It is
    the smallest control on the panel by *type* (12px), but no longer by target: the shared 24px floor
    above applies here too, so the smallest thing to read is not the hardest thing to hit. */

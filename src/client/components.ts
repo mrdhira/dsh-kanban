@@ -22,7 +22,7 @@ import type { ReactElement } from 'react';
 import type { BoardStore, BoardState } from './store.js';
 import { selectedTask } from './store.js';
 import { BOARD_STATES, actorKind, ageBand, ageDays, classLabel, columnsOf, formatAge, formatPercent, formatStamp, moveTargets, priorityCode, priorityWord, type Column } from './model.js';
-import { beginDrag, dragOver, dropTarget, indexFromPointer, isDropAllowed, keyboardTarget, type DragState } from './dnd.js';
+import { beginDrag, dragOver, dropTarget, indexFromPointer, isDropAllowed, keyboardTarget, stagesInsteadOfMoving, type DragState } from './dnd.js';
 import { API_PREFIX } from './api.js';
 import { STYLES, STYLE_ID } from './styles.js';
 import { CHECK_LABEL, CLASSES_OF_SERVICE, CLASS_LABEL, PRIORITIES, PRIORITY_LABEL, STATES, STATE_LABEL, type CheckId, type ClassOfService, type Priority, type State, type Task } from '../store/types.js';
@@ -52,6 +52,15 @@ interface ChildProps {
   readonly state: BoardState;
   readonly store: BoardStore;
   readonly onAnnounce: (message: string) => void;
+  /**
+   * The panel's move route, and the only one that reaches `dropped`.
+   *
+   * It reads `stagesInsteadOfMoving` before it sends anything, so every pointer and keyboard path
+   * that targets `dropped` — a lane drop, `Alt+←/→`, a move button — opens the drawer with the drop
+   * staged instead of asking the store for a move the gate refuses. The one exception is the
+   * drawer's own Drop control, which is the confirmed move this route exists to hand over to.
+   */
+  readonly moveOrStage: (id: string, toState: State, via: 'pointer' | 'keyboard', index?: number) => void;
 }
 
 /**
@@ -63,6 +72,24 @@ interface ChildProps {
  * only while the drawer element mounts, so it cannot go stale between renders.
  */
 let drawerOpenedByKeyboard = false;
+
+/**
+ * The one line that says why a drop is being asked for instead of performed.
+ *
+ * A drop needs a written reason and a gesture cannot write one, so the drag hands the move to the
+ * drawer rather than sending something the gate will refuse. That is a claim about the rule, not an
+ * apology for the interface, so it is stated as the rule.
+ */
+const STAGE_NOTE = 'the only way a card is moved to Dropped is a confirmed move carrying a reason — write it here';
+
+/**
+ * The element id the staged reason field points at with `aria-describedby`.
+ *
+ * Deliberately **not** `kb-`-prefixed: the class walk in the DOM suite reads every `kb-` token in this
+ * file as a class this component emits and requires a rule for it, and an id is not a class. One id
+ * is enough for `aria-describedby`, which is scoped to the document rather than to this subtree.
+ */
+const STAGE_NOTE_ID = 'stage-drop-note';
 
 /**
  * The empty board the pending state draws.
@@ -281,7 +308,7 @@ interface CardProps extends ChildProps {
 }
 
 function CardView(props: CardProps): ReactElement {
-  const { React, state, store, task, drag, setDrag, onAnnounce, cardNodes } = props;
+  const { React, state, store, task, drag, setDrag, onAnnounce, cardNodes, moveOrStage } = props;
   const days = ageDays(task, state.payload?.servedAt ?? new Date().toISOString());
   const band = ageBand(days, state.payload?.dow.sle.days ?? 3);
   const classes = ['kb-card'];
@@ -341,8 +368,10 @@ function CardView(props: CardProps): ReactElement {
         onAnnounce(`${task.id} is already at the end of the board`);
         return;
       }
-      onAnnounce(`${task.id} moved to ${target}`);
-      void store.move(task.id, target);
+      // Not `store.move`: a keyboard move into `dropped` carries no reason either, so it takes the
+      // same turn into the drawer the drag does. The route announces the outcome — `moving T-x to y`,
+      // or that the card stays until its reason is written — so the intent is not said twice.
+      moveOrStage(task.id, target, 'keyboard');
     }
   };
 
@@ -413,7 +442,7 @@ interface LaneProps extends ChildProps {
 }
 
 function Lane(props: LaneProps): ReactElement {
-  const { React, state, store, column, drag, setDrag, onAnnounce, cardNodes, loading } = props;
+  const { React, state, store, column, drag, setDrag, onAnnounce, cardNodes, loading, moveOrStage } = props;
   // A ref to the lane's card list, so a drop lands where the gap appeared rather than at the end.
   const cardsRef = React.useRef<{ children?: ArrayLike<{ getBoundingClientRect(): { top: number; height: number } }> } | null>(null);
   // Each card's midpoint, measured once per drag rather than once per `dragover`. The cards do not
@@ -482,7 +511,11 @@ function Lane(props: LaneProps): ReactElement {
         const target = dropTarget(drag);
         setDrag(null);
         if (target === null) return;
-        void store.move(target.taskId, target.toState, target.index);
+        // `moveOrStage`, not `store.move`: dropping on Dropped opens the drawer with the drop staged
+        // and sends nothing, because the reason the gate requires cannot come from a gesture. The
+        // index the pointer chose rides along, so the confirmed drop lands where the human let go.
+        // The lane never lit up for it either — `isDropAllowed` reads the same rule.
+        moveOrStage(target.taskId, target.toState, 'pointer', target.index);
       },
     },
     React.createElement(
@@ -514,6 +547,7 @@ function Lane(props: LaneProps): ReactElement {
               drag,
               setDrag,
               cardNodes,
+              moveOrStage,
             })
           )
         : // Pending is not empty. A skeleton line is drawn where a card will land, so the lane is
@@ -576,7 +610,7 @@ interface DrawerProps extends ChildProps {
 }
 
 function Drawer(props: DrawerProps): ReactElement {
-  const { React, state, store, task, onAnnounce, cardNodes } = props;
+  const { React, state, store, task, onAnnounce, cardNodes, moveOrStage } = props;
   const [comment, setComment] = React.useState('');
   const [dropReason, setDropReason] = React.useState('');
   const [blockReason, setBlockReason] = React.useState('');
@@ -586,6 +620,18 @@ function Drawer(props: DrawerProps): ReactElement {
   const [exceptionReason, setExceptionReason] = React.useState('');
   const [exceptionTarget, setExceptionTarget] = React.useState<State>(moveTargets(task.state)[0] ?? task.state);
   const drawerRef = React.useRef<HTMLDivElement | null>(null);
+  const dropRef = React.useRef<HTMLInputElement | null>(null);
+  /**
+   * The drop currently staged for this card, if a gesture staged one.
+   *
+   * Deliberately **not** read once at mount. The drawer is keyed by card, so the drop gesture mounts a
+   * fresh one and this is what that drawer reads — but the drawer's own `More moves…` list also offers
+   * `dropped`, and a click on that button stages into a drawer that is *already open*. Reading the
+   * snapshot once made that path a no-op: the store recorded the stage and the drawer never noticed.
+   * The store is the single source for this fact, so the drawer subscribes to it rather than copying
+   * it into component state.
+   */
+  const staged = state.stagedDrop !== null && state.stagedDrop.taskId === task.id ? state.stagedDrop : null;
   const detail = state.detail;
   const events = detail?.events ?? [];
   const comments = detail?.comments ?? [];
@@ -607,6 +653,34 @@ function Drawer(props: DrawerProps): ReactElement {
     node?.focus();
     return () => previouslyFocused?.focus();
   }, []);
+
+  /**
+   * A staged drop opens the group the reason lives in, before the focus effect below can reach it.
+   *
+   * `More moves…` is where `Drop` is, so the gesture that hands the move over has to reveal it:
+   * otherwise the human is told the rule and given an empty drawer. The dependency is the *staged
+   * fact*, not the mount: the drawer's own `Move … to Dropped` button stages into a drawer that is
+   * already open holding `moreOpen === false`, and a mount-only effect left that path staged in the
+   * store and invisible on screen.
+   */
+  React.useEffect(() => {
+    if (staged !== null) setMoreOpen(true);
+  }, [staged]);
+
+  /**
+   * A pointer-staged drop puts the keyboard in the reason field.
+   *
+   * A drag has no keyboard place to preserve, and the one thing the gesture is asking for is the
+   * reason — so the field takes focus, or the human is told to write something they must go looking
+   * for. The keyboard path (`Alt+→` into Dropped) keeps the drawer's own focus instead: a keyboard
+   * user asked for the card, not for a text box, and `Space`/`Enter` on the field's own button is
+   * where that path confirms. Nothing is claimed about `:focus-visible` here: a real text input
+   * paints its ring for a programmatic focus in every browser this panel ships in.
+   */
+  React.useEffect(() => {
+    if (staged === null || staged.via !== 'pointer' || !moreOpen) return;
+    dropRef.current?.focus();
+  }, [moreOpen]);
 
   // The card's position can move under the drawer (a drop, or another operator's poll). The field
   // follows it rather than holding a number the human would be editing blind.
@@ -653,10 +727,9 @@ function Drawer(props: DrawerProps): ReactElement {
         // `→ ready` is unreadable out of context; the label says which card and where.
         'aria-label': `Move ${task.id} to ${STATE_LABEL[target]}`,
         onClick: () => {
-          // The announcer carries the intent; a refusal follows through the notice strip, so this is
-          // never the last word on a move the host rejected.
-          onAnnounce(`moving ${task.id} to ${STATE_LABEL[target]}`);
-          void store.move(task.id, target);
+          // The route announces the outcome and carries the refusal notice; `dropped` is not in this
+          // menu, but a state that reaches it must not be able to bypass the rule by being listed.
+          moveOrStage(task.id, target, 'keyboard');
         },
       },
       `→ ${STATE_LABEL[target]}`
@@ -683,6 +756,10 @@ function Drawer(props: DrawerProps): ReactElement {
       // drawer keeps the answer it was given. The stylesheet uses it to draw the ring the browser may
       // decline to draw for the programmatic focus below.
       'data-open': drawerOpenedByKeyboard ? 'keyboard' : 'pointer',
+      // Present only while this drawer was opened by a drop gesture, and the hook the stylesheet
+      // tints the Drop group with. It is an attribute rather than a class so the DOM suite can read
+      // the staged fact without walking nodes.
+      ...(staged === null ? {} : { 'data-staged': 'dropped' }),
       tabIndex: -1,
       ref: drawerRef,
       onKeyDown,
@@ -920,8 +997,14 @@ function Drawer(props: DrawerProps): ReactElement {
             // The destructive zone, kept apart from the reversible moves above it.
             React.createElement(
               'div',
-              { className: 'kb-group kb-group-danger' },
+              { className: `kb-group kb-group-danger${staged === null ? '' : ' kb-staged'}` },
               React.createElement('span', { className: 'kb-dim' }, 'drop'),
+              // Why the gesture that opened this drawer is asking rather than doing. It is rendered
+              // only when a drop is staged, and the reason field points at it, so a reader who lands
+              // on the field is told the rule without having to find the drawer's prose.
+              staged === null
+                ? null
+                : React.createElement('span', { className: 'kb-dim kb-prose', id: STAGE_NOTE_ID }, STAGE_NOTE),
               React.createElement(
                 'div',
                 { className: 'kb-bar' },
@@ -934,6 +1017,8 @@ function Drawer(props: DrawerProps): ReactElement {
                   'data-field': 'drop-reason',
                   placeholder: 'reason to drop…',
                   'aria-label': 'Reason to drop',
+                  ...(staged === null ? {} : { 'aria-describedby': STAGE_NOTE_ID }),
+                  ref: dropRef,
                   value: dropReason,
                   onChange: (event: { target: { value: string } }) => setDropReason(event.target.value),
                 }),
@@ -945,7 +1030,11 @@ function Drawer(props: DrawerProps): ReactElement {
                     'data-action': 'drop',
                     disabled: dropReason.trim().length === 0,
                     onClick: () => {
-                      void store.drop(task.id, dropReason.trim());
+                      // **This is the confirmed move**: the reason is here, so this is the one call
+                      // that reaches `dropped` with the evidentiary half attached. The index the
+                      // pointer chose rides along when a drag staged it, so the card lands where the
+                      // human let go rather than at the end of the lane.
+                      void store.drop(task.id, dropReason.trim(), staged?.index);
                       setDropReason('');
                     },
                   },
@@ -1115,7 +1204,36 @@ export function BoardPage(props: BoardProps): ReactElement {
   const total = state.payload?.total ?? 0;
   const task = selectedTask(state);
   const onAnnounce = (message: string): void => setAnnouncement(message);
-  const child = { React, state, store, onAnnounce, cardNodes };
+  /**
+   * The panel's one move route.
+   *
+   * `stagesInsteadOfMoving` — the same predicate `isDropAllowed` gives the lane's highlight — decides
+   * whether the target can be moved to at all from here. A move to `dropped` needs a written reason,
+   * and no gesture can write one; so **the only way a card is moved to `dropped` is a confirmed
+   * drawer move carrying a reason** — the drop group's own Drop control, which is the one call that
+   * reaches `store.drop`. Every other path that targets `dropped`, pointer or keyboard, lands here
+   * and opens the drawer with the move staged instead of sending something the gate will refuse.
+   */
+  const moveOrStage = (id: string, toState: State, via: 'pointer' | 'keyboard', index?: number): void => {
+    const moving = state.payload?.tasks.find((entry) => entry.id === id);
+    // A drop on the lane the card already sits in is not a move at all. A drag carries no new order
+    // (ordering lives behind `Set position`), and the store treats a same-state move as
+    // `checkMoveLocally`'s no-op — but it still sends a `move` with `expectedRev`, a mutation that
+    // changes nothing. So a no-op stays a no-op and never reaches the store or the staging path.
+    if (moving !== undefined && moving.state === toState) return;
+    if (moving !== undefined && stagesInsteadOfMoving(moving.state, toState)) {
+      onAnnounce(`${id} stays until its drop reason is written`);
+      void store.stageDrop(id, via, index);
+      return;
+    }
+    onAnnounce(`moving ${id} to ${STATE_LABEL[toState]}`);
+    // The drop index is a position inside the lane it was dropped on, and only a staged drop carries
+    // one: the ordinary move recomputes the position from the target lane itself, so the index is
+    // spent on the staged path alone.
+    void index;
+    void store.move(id, toState);
+  };
+  const child = { React, state, store, onAnnounce, cardNodes, moveOrStage };
 
   return React.createElement(
     'div',

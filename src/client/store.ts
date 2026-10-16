@@ -35,6 +35,29 @@ export interface Notice {
   readonly at: number;
 }
 
+/**
+ * A move the panel is holding open instead of sending: the drawer's drop, staged.
+ *
+ * A drag onto Dropped (or a keyboard move that lands there) cannot carry the reason the gate
+ * requires, so the panel does not send a move at all — it opens the card's drawer with the drop
+ * staged and the reason field focused, and nothing reaches the store until the human confirms. The
+ * state lives here rather than inside the drawer because the drawer is keyed by card: it mounts
+ * fresh when the gesture opens it, and a card-keyed local would have to be seeded before the mount.
+ */
+export interface StagedDrop {
+  readonly taskId: string;
+  /** Which gesture staged it, so the drawer knows whether to claim the keyboard for the field. */
+  readonly via: 'pointer' | 'keyboard';
+  /**
+   * The drop index the pointer chose, when a drag staged it.
+   *
+   * The gesture already decided *where* in the lane the card belongs; only the reason is missing.
+   * Without this the confirmed drop would land at the end of the lane and the gap the human aimed
+   * at would be forgotten between the gesture and the confirmation.
+   */
+  readonly index?: number;
+}
+
 export interface BoardState {
   readonly status: BoardStatus;
   readonly payload: BoardPayload | null;
@@ -45,6 +68,8 @@ export interface BoardState {
   readonly origin: OriginInfo;
   readonly busy: boolean;
   readonly lastError: string | null;
+  /** Set while a drop is staged in the drawer; null otherwise. */
+  readonly stagedDrop: StagedDrop | null;
 }
 
 /**
@@ -73,6 +98,8 @@ export interface BoardStore {
   refresh(force?: boolean): Promise<void>;
   setFilter(filter: ViewFilter): void;
   select(id: string | null): Promise<void>;
+  /** Open the card's drawer with its drop staged; nothing is sent until the human confirms. */
+  stageDrop(id: string, via: StagedDrop['via'], index?: number): Promise<void>;
   notice(message: string | null, kind?: Notice['kind'], missing?: readonly string[]): void;
   create(title: string, extra?: Record<string, unknown>): Promise<void>;
   move(id: string, toState: State, index?: number, options?: MoveOptions): Promise<void>;
@@ -81,7 +108,7 @@ export interface BoardStore {
   comment(id: string, body: string): Promise<void>;
   block(id: string, reason: string): Promise<void>;
   unblock(id: string): Promise<void>;
-  drop(id: string, reason: string): Promise<void>;
+  drop(id: string, reason: string, index?: number): Promise<void>;
   purge(id: string): Promise<void>;
 }
 
@@ -107,6 +134,7 @@ export function createBoardStore(transport: BoardTransport, options: BoardStoreO
     origin: transport.origin,
     busy: false,
     lastError: null,
+    stagedDrop: null,
   };
 
   const listeners = new Set<() => void>();
@@ -160,6 +188,11 @@ export function createBoardStore(transport: BoardTransport, options: BoardStoreO
     }
   }
 
+  /** Whether a select is already open on `id`, so the drawer need not be re-opened for a stage. */
+  function isSelected(id: string): boolean {
+    return state.selectedId === id;
+  }
+
   /** Run one write: apply locally, ask the host, roll back and report if it says no. Returns whether it landed. */
   async function write(op: string, payload: Record<string, unknown>, optimistic?: () => BoardPayload | null): Promise<boolean> {
     const previous = state.payload;
@@ -180,7 +213,13 @@ export function createBoardStore(transport: BoardTransport, options: BoardStoreO
     }
   }
 
-  return {
+  /**
+   * The store, named so the returned methods can call one another without `this`.
+   *
+   * `stageDrop` is `select` plus the staged record; a destructured `this` would break the moment a
+   * caller passed `store.stageDrop` around, and the rest of this file already avoids the receiver.
+   */
+  const store: BoardStore = {
     getSnapshot: () => state,
 
     subscribe(listener) {
@@ -209,7 +248,7 @@ export function createBoardStore(transport: BoardTransport, options: BoardStoreO
 
     async select(id) {
       if (id === null) {
-        set({ selectedId: null, detail: null });
+        set({ selectedId: null, detail: null, stagedDrop: null });
         return;
       }
       set({ selectedId: id, detail: null });
@@ -220,6 +259,28 @@ export function createBoardStore(transport: BoardTransport, options: BoardStoreO
       } catch (error) {
         set({ notice: refusalNotice(error) });
       }
+    },
+
+    /**
+     * Stage a drop: select the card and record the gesture, in that order.
+     *
+     * The drawer renders off `selectedId`, so selecting is what opens it; `stagedDrop` tells it to
+     * open the destructive group and focus the reason field. An unchanged pair does nothing, so a
+     * repeated `dragover`/`drop` on Dropped cannot re-render the board for no reason.
+     */
+    async stageDrop(id, via, index) {
+      const staged: StagedDrop = { taskId: id, via, ...(index === undefined ? {} : { index }) };
+      const current = state.stagedDrop;
+      if (
+        current?.taskId === staged.taskId &&
+        current.via === staged.via &&
+        current.index === staged.index &&
+        isSelected(id)
+      ) {
+        return;
+      }
+      set({ stagedDrop: staged });
+      await store.select(id);
     },
 
     notice(message, kind = 'info', missing) {
@@ -308,13 +369,22 @@ export function createBoardStore(transport: BoardTransport, options: BoardStoreO
       await write('unblock', { id });
     },
 
-    async drop(id, reason) {
+    async drop(id, reason, index) {
       const payload = state.payload;
       const task = payload?.tasks.find((entry) => entry.id === id);
+      // Where the card lands: the pointer's own index when a drag staged this drop, otherwise the
+      // card's current position (a drop from the drawer's own Drop control reorders nothing).
+      const position =
+        index === undefined
+          ? (task?.position ?? 0)
+          : positionForIndex(
+              [...(payload?.tasks ?? [])].filter((entry) => entry.state === 'dropped').filter((entry) => entry.id !== id),
+              index
+            );
       const landed = await write(
         'move',
-        { id, toState: 'dropped', reason, ...(task === undefined ? {} : { expectedRev: task.rev }) },
-        payload === null ? undefined : () => applyLocalMove(payload, id, 'dropped', task?.position ?? 0, now().toISOString())
+        { id, toState: 'dropped', toPosition: position, reason, ...(task === undefined ? {} : { expectedRev: task.rev }) },
+        payload === null ? undefined : () => applyLocalMove(payload, id, 'dropped', position, now().toISOString())
       );
       // Dropping is the one move that takes a card out of play, and the board said nothing: the only
       // feedback was `showing X of Y` ticking down, and the card moved to a lane nobody had a control
@@ -337,6 +407,8 @@ export function createBoardStore(transport: BoardTransport, options: BoardStoreO
       await write('purge', { id });
     },
   };
+
+  return store;
 }
 
 /** The card the drawer is showing, from the snapshot. */

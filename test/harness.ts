@@ -222,6 +222,15 @@ export interface MountedView {
   type(selector: string, value: string): Promise<void>;
   /** True when the node exists — never hand a DOM node to an assertion. */
   has(selector: string): boolean;
+  /**
+   * True when the document's focus is on the node the selector names.
+   *
+   * The comparison is made here and only the boolean crosses back, for the same reason `has` exists:
+   * an assertion handed a DOM node makes the runner inspect it, which once walked React's fibers and
+   * allocated gigabytes. False is also returned when the selector matches nothing, so a case about
+   * focus cannot pass because the node vanished.
+   */
+  isFocused(selector: string): boolean;
 }
 
 declare global {
@@ -285,6 +294,10 @@ export function mount(loaded: LoadedBundle, registration: Registration, props: R
     // Typed as a string because that is all any caller does with it.
     text: () => container.textContent as string,
     has: (selector) => container.querySelector(selector) !== null,
+    isFocused: (selector) => {
+      const node = container.querySelector(selector);
+      return node !== null && container.ownerDocument.activeElement === node;
+    },
 
     async click(selector) {
       const node = container.querySelector(selector);
