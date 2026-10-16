@@ -15,8 +15,8 @@
  * render. The only local state is interaction state: what is being dragged, what is typed in a box.
  *
  * Accessibility is not a garnish: a drag-only board cannot be used without a pointer, so every card
- * is focusable, `Alt+←/→` moves it, `Enter` opens it, and every state change is announced through
- * one `aria-live` region.
+ * is focusable, `Alt+←/→` moves it, `Enter` or `Space` opens it, and every state change is announced
+ * through the panel's persistent `aria-live` region (see `BoardPage` for why there are three).
  */
 import type { ReactElement } from 'react';
 import type { BoardStore, BoardState } from './store.js';
@@ -180,7 +180,7 @@ function MetricsStrip(props: MetricsProps): ReactElement | null {
     React.createElement('span', { className: 'kb-dim' }, React.createElement('b', null, label), ` ${value}`);
   return React.createElement(
     'div',
-    { className: 'kb-metrics', 'aria-label': 'Flow metrics' },
+    { className: 'kb-metrics', role: 'group', 'aria-label': 'Flow metrics' },
     lead('WIP', `${metrics.wip}/${wipLimit}`),
     lead('Oldest', `${num(metrics.ageing.oldestDays)}d vs ${metrics.sle.days}d SLE · ${metrics.ageing.count} past`),
     disclosureButton(React, { label: 'More metrics', open, action: 'more-metrics', onToggle }),
@@ -218,8 +218,9 @@ type CardNodes = { current: Map<string, CardNode> };
  * The two checklist states, drawn rather than typed.
  *
  * Unicode `☐`/`☑` standing in for an icon system is the craft floor's refusal: the glyph's weight
- * and metrics belong to whatever font the host happens to load. One stroke width, `currentColor`,
- * and `aria-hidden` — `aria-pressed` on the button stays the only source of truth.
+ * and metrics belong to whatever font the host happens to load. One stroke width, drawn rather than
+ * typed, and `aria-hidden` — `aria-pressed` on the button stays the only source of truth. The card's
+ * completion mark is the same glyph; only its tick takes a second tone, and `.kb-mark-tick` is why.
  */
 function checkGlyph(React: ReactLike, checked: boolean, className: string): ReactElement {
   return React.createElement(
@@ -238,7 +239,14 @@ function checkGlyph(React: ReactLike, checked: boolean, className: string): Reac
       focusable: 'false',
     },
     React.createElement('rect', { x: 2, y: 2, width: 12, height: 12, rx: 2.5 }),
-    checked ? React.createElement('path', { d: 'M5 8.2 7.4 10.6 11 5.6' }) : null
+    // The tick carries its own class so the card's frame and tick can hold different tones: on a done
+    // *card* the frame is the app's green, which composites to only 2.28:1 on the light card's white,
+    // and a mark below the graphical floor is a mark half the readers cannot see. The tick is the part
+    // that must be legible, so on a card it takes the ordinary foreground (18.90:1 light); the frame
+    // keeps the success meaning. Nothing else changes: a checklist row's glyph sets no `.kb-mark`, so
+    // its tick is simply `currentColor` as it always was, and its state is `aria-pressed` plus the
+    // words `· unticked`.
+    checked ? React.createElement('path', { className: 'kb-mark-tick', d: 'M5 8.2 7.4 10.6 11 5.6' }) : null
   );
 }
 
@@ -286,7 +294,11 @@ function CardView(props: CardProps): ReactElement {
   }
 
   const onKeyDown = (event: { key: string; altKey: boolean; preventDefault: () => void }): void => {
-    if (event.key === 'Enter') {
+    // APG's button pattern is Enter *and* Space. A `role="button"` div is not a real `<button>`, so
+    // nothing synthesises the Space click the browser would give one; without this branch Space
+    // scrolled the page instead of opening the card, and PRODUCT.md's operator parity was a claim
+    // about the pointer's actions that the keyboard could not keep. Both keys take the same path.
+    if (event.key === 'Enter' || event.key === ' ' || event.key === 'Spacebar') {
       event.preventDefault();
       // The panel is about to move the keyboard into the drawer itself, and a programmatic focus is
       // exactly the case a browser may not paint a ring for. Claim it here, where the cause is known.
@@ -382,6 +394,13 @@ function Lane(props: LaneProps): ReactElement {
   const { React, state, store, column, drag, setDrag, onAnnounce, cardNodes, loading } = props;
   // A ref to the lane's card list, so a drop lands where the gap appeared rather than at the end.
   const cardsRef = React.useRef<{ children?: ArrayLike<{ getBoundingClientRect(): { top: number; height: number } }> } | null>(null);
+  // Each card's midpoint, measured once per drag rather than once per `dragover`. The cards do not
+  // move while a drag is live — the row changes class and the lanes change width, but a card's own
+  // rect is stable for the duration — so re-reading every card on every event was layout work whose
+  // answer could not have changed. `cards` is the count the cache was built for: a lane whose card
+  // count changed (a drop landed, a poll arrived) invalidates it rather than answering from stale
+  // geometry. Today's ~20 cards made this waste small; it was waste all the same.
+  const midpoints = React.useRef<{ cards: number; values: number[] }>({ cards: -1, values: [] });
   // The drop affordance is the lane a drop is allowed on and is currently over — `isDropAllowed`
   // states the "allowed" half, so a lane that could not take the card never lights up for it.
   const isOver = drag !== null && isDropAllowed(drag.fromState, column.state) && drag.overState === column.state;
@@ -389,11 +408,16 @@ function Lane(props: LaneProps): ReactElement {
   const indexAt = (clientY: number): number => {
     const container = cardsRef.current;
     if (container?.children === undefined) return column.cards.length;
-    const midpoints = Array.from(container.children).map((node) => {
-      const rect = node.getBoundingClientRect();
-      return rect.top + rect.height / 2;
-    });
-    return indexFromPointer(column.cards, drag?.taskId ?? '', clientY, midpoints);
+    if (midpoints.current.cards !== column.cards.length) {
+      midpoints.current = {
+        cards: column.cards.length,
+        values: Array.from(container.children).map((node) => {
+          const rect = node.getBoundingClientRect();
+          return rect.top + rect.height / 2;
+        }),
+      };
+    }
+    return indexFromPointer(column.cards, drag?.taskId ?? '', clientY, midpoints.current.values);
   };
 
   const classes = ['kb-lane'];
@@ -410,8 +434,13 @@ function Lane(props: LaneProps): ReactElement {
     {
       className: classes.join(' '),
       'data-lane': column.state,
+      // The lane was an identity-less `div` carrying a name, which ARIA 1.2's generic role prohibits
+      // — the name was inert to assistive technology. `group` is the role it actually is: a named
+      // collection of cards. `aria-keyshortcuts` used to sit here too, on a lane that is never
+      // focusable, where no reader could act on it; the card that *is* focusable already declares the
+      // same shortcut, and the drawer's own hint spells it out.
+      role: 'group',
       'aria-label': `${column.label}, ${column.cards.length} card(s)`,
-      'aria-keyshortcuts': 'Alt+ArrowLeft Alt+ArrowRight',
       onDragOver: (event: { preventDefault: () => void; clientY: number }) => {
         event.preventDefault();
         if (drag === null) return;
@@ -479,7 +508,9 @@ function ChecklistRows(props: ChecksProps): ReactElement {
   const checked: Record<string, unknown> = gate === 'dor' ? { ...task.dor } : { ...task.dod };
   return React.createElement(
     'div',
-    { className: 'kb-checks', 'aria-label': gate === 'dor' ? 'Definition of Ready' : 'Definition of Done' },
+    // `role="group"` for the same reason as the metrics strip and the lane: a name on a role-less
+    // `div` is prohibited by ARIA 1.2, and these rows are exactly a named group of one gate's items.
+    { className: 'kb-checks', role: 'group', 'aria-label': gate === 'dor' ? 'Definition of Ready' : 'Definition of Done' },
     React.createElement('span', { className: 'kb-dim' }, gate === 'dor' ? 'Definition of Ready' : 'Definition of Done'),
     items.map((id) => {
       const missing = checked[id] === undefined;
@@ -589,8 +620,8 @@ function Drawer(props: DrawerProps): ReactElement {
         // `→ ready` is unreadable out of context; the label says which card and where.
         'aria-label': `Move ${task.id} to ${STATE_LABEL[target]}`,
         onClick: () => {
-          // The board's one live region carries the intent; a refusal follows through the notice
-          // strip, so this is never the last word on a move the host rejected.
+          // The announcer carries the intent; a refusal follows through the notice strip, so this is
+          // never the last word on a move the host rejected.
           onAnnounce(`moving ${task.id} to ${STATE_LABEL[target]}`);
           void store.move(task.id, target);
         },
@@ -610,6 +641,11 @@ function Drawer(props: DrawerProps): ReactElement {
     {
       className: 'kb-drawer',
       'data-drawer': task.id,
+      // A region, not an anonymous box: the drawer is the one part of the panel that replaces the
+      // board's meaning with a single card's, and a reader who jumps by landmark should find it by
+      // name. `aria-label` on a role-less `div` is prohibited, which is what an unnamed region was.
+      role: 'region',
+      'aria-label': `${task.id} ${task.title}`,
       // Read once, at mount: this element is keyed by card, so a new drawer re-reads it and the open
       // drawer keeps the answer it was given. The stylesheet uses it to draw the ring the browser may
       // decline to draw for the programmatic focus below.
@@ -961,8 +997,12 @@ function Drawer(props: DrawerProps): ReactElement {
 /**
  * The whole panel.
  *
- * One `aria-live` region carries every announcement and it is rendered once: several live regions
- * make a screen reader race itself.
+ * **Three live regions, deliberately, and this comment used to claim one.** The announcer below is
+ * the persistent one — it is rendered on every pass, empty or not, because a region that appears with
+ * its first message is a region many screen readers never announce. The other two are conditional
+ * *states* of the panel, not announcements: a notice (a refusal, an informational line) and the
+ * board-level error. Both are `role="status"` because the thing they say is the thing that changed,
+ * and they carry no second copy in the announcer, so no message is ever spoken twice.
  */
 export function BoardPage(props: BoardProps): ReactElement {
   const { React, store, documentRef } = props;
@@ -1097,6 +1137,10 @@ export function BoardPage(props: BoardProps): ReactElement {
             className: 'kb-btn',
             type: 'button',
             'data-action': 'all',
+            // `!filtered`, not `sameFilter(...)`: a *search-only* filter draws exactly the same lanes
+            // as no filter, so no view is pressed and `All` is the one control that can be said to be
+            // showing — pressing it is what clears the box. Marking nothing pressed while the board is
+            // narrowed by text would leave the row with no answer to "which of these am I in?".
             'aria-pressed': !filtered,
             onClick: () => store.setFilter(EMPTY_FILTER),
           },
@@ -1158,6 +1202,9 @@ export function BoardPage(props: BoardProps): ReactElement {
           `showing ${state.payload.truncated.shown} of ${state.payload.truncated.total} cards — the flow metrics cover only those`
         ),
     React.createElement(MetricsStrip, { ...child, open: metricsOpen, onToggle: () => setMetricsOpen(!metricsOpen) }),
+    // The announcer, present on every pass whether or not it has anything to say: a live region that
+    // is inserted with its first message is a live region several screen readers never announce. It
+    // is empty text, so it paints nothing.
     React.createElement('div', { className: 'kb-dim', role: 'status', 'aria-live': 'polite' }, announcement),
     state.status === 'error' && state.payload === null
       ? React.createElement(

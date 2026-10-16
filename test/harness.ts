@@ -217,6 +217,8 @@ export interface MountedView {
   drag(fromSelector: string, toSelector: string, clientY?: number): Promise<void>;
   /** Fire only the `dragstart`, so a case can inspect the board while a drag is live. */
   dragStart(selector: string): Promise<void>;
+  /** Fire one `dragover` on its own, so a case can count the work a repeated event does. */
+  dragOver(selector: string, clientY?: number): Promise<void>;
   type(selector: string, value: string): Promise<void>;
   /** True when the node exists — never hand a DOM node to an assertion. */
   has(selector: string): boolean;
@@ -340,6 +342,15 @@ export function mount(loaded: LoadedBundle, registration: Registration, props: R
       const dataTransfer = { setData: () => {}, effectAllowed: '' };
       await act(async () => {
         from.dispatchEvent(nativeEvent('dragstart', { dataTransfer }));
+      });
+    },
+
+    async dragOver(selector, clientY = 10) {
+      const to = container.querySelector(selector);
+      assert.ok(to !== null, `expected ${selector} to exist`);
+      const dataTransfer = { setData: () => {}, effectAllowed: '' };
+      await act(async () => {
+        to.dispatchEvent(nativeEvent('dragover', { clientY, dataTransfer }));
       });
     },
 

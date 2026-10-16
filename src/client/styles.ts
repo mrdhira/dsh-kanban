@@ -26,15 +26,24 @@ export const STYLES = `
    the browser makes it the one mark on the panel that belongs to no design system. */
 .kb-page { caret-color: var(--dsw-alias-label-primary, inherit); }
 .kb-page ::selection { background: var(--dsw-alias-bg-document-selection, rgba(128,128,128,0.25)); }
+/* The scrollbar ladder, with the track the app itself declares. l1 is the thumb and l2 the track --
+   the doc's reading, now the code's -- but **both tokens resolve to the app's neutral-200 in light**
+   (#e5e5e5), so an opaque track painted the thumb at 1.00:1 and the scrollbar read as a gap. The app
+   answers that by writing scrollbar-color as "thumb, transparent", and its own -webkit track rule is
+   "background: 0 0". The panel now writes both halves the same way, so the thumb is measured against
+   the surface it actually sits on (the lane or the drawer) instead of against a same-valued fill:
+   1.00:1 -> 1.17:1 in light, and 3.50:1 in dark where the two tokens do differ. The thumb's own
+   fallback is --kb-label-secondary, this sheet's "visible de-emphasised mark", so a missing ladder
+   still produces a visible thumb (5.80:1 light) rather than a track-coloured one. */
 .kb-lanes, .kb-drawer { scrollbar-width: thin;
-  scrollbar-color: var(--dsw-alias-scrollbar-bg-l1, var(--kb-label-secondary)) var(--dsw-alias-scrollbar-bg-l2, transparent); }
+  scrollbar-color: var(--dsw-alias-scrollbar-bg-l1, var(--kb-label-secondary)) transparent; }
 .kb-lanes::-webkit-scrollbar, .kb-drawer::-webkit-scrollbar { width: 10px; height: 10px; }
 .kb-lanes::-webkit-scrollbar-thumb, .kb-drawer::-webkit-scrollbar-thumb {
   background: var(--dsw-alias-scrollbar-bg-l1, var(--kb-label-secondary)); border-radius: 999px; }
 .kb-lanes::-webkit-scrollbar-thumb:hover, .kb-drawer::-webkit-scrollbar-thumb:hover {
   background: var(--dsw-alias-scrollbar-hover-l1, var(--kb-label-secondary)); }
 .kb-lanes::-webkit-scrollbar-track, .kb-drawer::-webkit-scrollbar-track {
-  background: var(--dsw-alias-scrollbar-bg-l2, transparent); }
+  background: transparent; }
 .kb-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; line-height: 1.4; }
 .kb-title { font-size: 18px; font-weight: 600; margin: 0; line-height: 1.25; }
 .kb-sub { color: var(--dsw-alias-label-secondary, var(--kb-label-secondary));
@@ -61,7 +70,13 @@ export const STYLES = `
 /* A disabled button may not keep a pressed look: the one button that is both (a ticked checklist row
    that a mutation has put out of action) must read as inert, not as chosen. */
 .kb-btn[aria-pressed="true"]:disabled { background: transparent; border-color: var(--dsw-alias-border-l1, var(--kb-border-l1)); }
-.kb-btn:disabled { opacity: 0.5; cursor: default; }
+/* De-emphasis is a *colour* here, never an element opacity. An element opacity of 0.5 on the whole
+   control took its label to 3.51:1 in light -- a failure, because the label is text -- and its 1px
+   border with it. The label token is the ladder the system already has, and its 5.80:1 light /
+   12.11:1 dark on the card is what a control that is present but inert should measure. The resting
+   border stays; hover, the press nudge and any pressed fill are still cancelled, so it does not move
+   or light up. */
+.kb-btn:disabled { color: var(--dsw-alias-label-secondary, var(--kb-label-secondary)); cursor: default; }
 .kb-btn:disabled:hover { background: transparent; }
 .kb-btn:disabled:active { transform: none; }
 .kb-chip { border: 1px solid var(--dsw-alias-border-l1, var(--kb-border-l1)); border-radius: 999px; padding: 1px 8px; font-size: 12px; line-height: 1.5; }
@@ -93,8 +108,13 @@ export const STYLES = `
 .kb-lanes { display: flex; gap: 10px; overflow-x: auto; align-items: flex-start; flex: 1 1 auto; min-height: 140px; padding-bottom: 6px; }
 /* Pending is a state the panel draws, not a sentence it prints. 'aria-busy' is the state; the dimming
    is the sighted half of it, and it is not colour-only -- it is weight of presence, and the header
-   says 'connecting...' in words. */
-.kb-lanes-busy, .kb-lanes-loading { opacity: 0.6; }
+   says 'connecting...' in words.
+   The dimming is a token colour, **not** an element opacity: an element opacity of 0.6 on the row took
+   the ids, the lane counts, the card titles and the comments to 2.53:1 light / 3.59:1 dark, so the board
+   failed AA during any write or the first load -- the moment a reader is most likely to be reading it.
+   The members that set their own colour (a red over-limit count, a P0 code, the drawn mark) keep it,
+   which is the point: a warning that could not be seen because a write was in flight is not one. */
+.kb-lanes-busy, .kb-lanes-loading { color: var(--dsw-alias-label-secondary, var(--kb-label-secondary)); }
 /* The loading tell. A lane's own skeleton line is drawn for each lane the board is about to fill, so a
    pending board reads as pending at every width instead of as five empty lanes that might be the
    answer. It carries no text; the header's 'connecting...' is the announced half. */
@@ -141,10 +161,22 @@ export const STYLES = `
 .kb-card-top > * { white-space: nowrap; }
 /* A done card and a review card are the same shape and hairline otherwise; the success tone is
    carried by a drawn mark, not by an edge. The fallback is the ordinary label colour, so a missing
-   token degrades to "marked" rather than to nothing. */
+   token degrades to "marked" rather than to nothing.
+   **The mark is two-tone, and that is what makes it meet 3:1.** The app's success token (a medium
+   green, #22c55e) is the same value in *both* themes, and the most a 1.5px stroke of it can composite
+   to on the light card's white is 2.28:1 -- a drawn mark below the graphical floor, which no stroke
+   width can repair because the ceiling is the colour itself (a fully-covered pixel is still 2.28:1).
+   So the frame carries the success hue, where it is redundant with the shape and the word "Done", and
+   the tick inside it is drawn in the ordinary foreground: 18.90:1 light / 17.45:1 dark on the card,
+   15.03:1 on the dark lane. No new colour was invented and no edge was thickened; the two tokens the
+   sheet already had are assigned to the two parts each can actually carry. The rule is scoped to
+   the card's own mark, so a checklist row's glyph (which shares the class on its path) is untouched:
+   its tick still inherits currentColor, which is what its dark-theme amber/unticked treatment and
+   its aria-pressed state were built around. */
 .kb-mark { align-self: center; flex: 0 0 auto; color: var(--dsw-alias-state-success-primary, var(--dsw-alias-label-primary, inherit)); }
+.kb-mark .kb-mark-tick { color: var(--dsw-alias-label-primary, inherit); }
 .kb-card-id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--dsw-alias-label-secondary, var(--kb-label-secondary)); font-size: 12px; }
-.kb-card-title { flex: 1 1 auto; }
+.kb-card-title { flex: 1 1 auto; text-wrap: pretty; }
 .kb-card-meta { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font-size: 12px; color: var(--dsw-alias-label-secondary, inherit); }
 .kb-pri { font-weight: 600; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .kb-pri-p0 { color: var(--dsw-alias-state-error-primary, #d64545); }
@@ -179,10 +211,22 @@ export const STYLES = `
 /* A select is a value picker, not a text box: it does not need the search field's width. */
 select.kb-input { min-width: 0; padding-right: 4px; }
 input[type="number"].kb-input { min-width: 76px; }
-.kb-input::placeholder { color: var(--dsw-alias-label-secondary, var(--kb-label-secondary)); }
+/* A placeholder is text, and the browser's own placeholder styling dims it for you: Chrome applies
+   roughly 0.54 of the element's opacity on top of whatever colour the author set, so the passing
+   label-secondary above arrived as 2.27:1 in light (and 3.35-4.33:1 in dark). Setting "opacity: 1"
+   here means the colour the token gives is the colour that paints -- only the deliberate dark-theme
+   label-tertiary rule below changes it, and that one passes at 8.54:1 in the scope it is written for.
+   The -webkit- spelling is listed for the same reason the scrollbar's two halves are: a UA
+   pseudo-element needs the value restated where it has a rule of its own. */
+.kb-input::placeholder, .kb-input::-webkit-input-placeholder { color: var(--dsw-alias-label-secondary, var(--kb-label-secondary)); opacity: 1; }
 .kb-input:hover { border-color: var(--dsw-alias-border-l2, var(--dsw-alias-border-l1, rgba(128,128,128,0.5))); }
 .kb-metrics { display: flex; gap: 14px; flex-wrap: wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
-  font-variant-numeric: tabular-nums; }
+  font-variant-numeric: tabular-nums;
+  /* flex-wrap decides where a *whole item* goes, not what happens inside one: a long sle.source token
+     (the basis is the host's own string) ran past the narrowest panel, because neither a lead nor the
+     revealed kb-dim fact had anywhere to break. One declaration covers every span in the strip, and a
+     token longer than the column now breaks instead of overflowing. */
+  word-break: break-word; }
 /* WIP-against-limit and oldest-against-SLE lead; history and the SLE definition are demoted to
    dimmed, so the strip has one scan order instead of nine equal items. */
 .kb-metric-lead { font-weight: 600; }

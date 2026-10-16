@@ -895,11 +895,22 @@ test('P2.4: an unreachable board is a state with a recovery, not only a sentence
 
 test('P2.5: a disabled control reads as disabled, and never keeps a chosen look', async () => {
   const styles = readFileSync(new URL('../src/client/styles.ts', import.meta.url), 'utf8');
-  // The only opacity in the sheet is the disabled one, and it is stated for the button that is both
-  // pressed and disabled -- a ticked checklist row a mutation has just taken out of action.
-  assert.match(styles, /\.kb-btn:disabled \{ opacity: 0\.5; cursor: default; \}/);
+  // De-emphasis is a **token colour**, never an element opacity: `opacity: 0.5` on the whole control
+  // put the label at 3.51:1 in light -- a text failure -- and dimmed the 1px border with it. The rule
+  // that replaces it names the label token, and nothing in the sheet may dim a control's whole box.
+  assert.match(styles, /\.kb-btn:disabled \{ color: var\(--dsw-alias-label-secondary, var\(--kb-label-secondary\)\); cursor: default; \}/);
+  assert.equal(styles.includes('.kb-btn:disabled { opacity'), false, 'the element opacity is gone');
+  // No other selector dims text with an element opacity either -- this is the panel's systemic AA
+  // failure, so the check is over the whole sheet rather than over the one rule that was reported.
+  const dimmed = [...styles.matchAll(/([^{}]+)\{[^{}]*opacity:\s*0?\.[0-9]+/g)].map((match) => (match[1] as string).trim());
+  assert.deepEqual(dimmed, [], 'no rule dims a box with an element opacity');
   assert.match(styles, /\.kb-btn\[aria-pressed="true"\]:disabled \{ background: transparent; border-color: var\(--dsw-alias-border-l1/);
-  assert.equal(styles.includes('opacity: 0.4'), false, 'no second opacity was invented');
+  // A placeholder is dimmed by the *UA* at ~0.54 on top of the author's colour, so the author has to
+  // say `opacity: 1` for the passing token to be the colour that paints (2.27:1 -> 5.80:1 in light).
+  assert.match(styles, /\.kb-input::placeholder, \.kb-input::-webkit-input-placeholder \{ color: var\(--dsw-alias-label-secondary, var\(--kb-label-secondary\)\); opacity: 1; \}/);
+  // The busy/loading row is dimmed by colour too: opacity 0.6 there took card ids and lane counts to
+  // 2.53:1 light, i.e. the whole board failed AA during any write or the first load.
+  assert.match(styles, /\.kb-lanes-busy, \.kb-lanes-loading \{ color: var\(--dsw-alias-label-secondary, var\(--kb-label-secondary\)\); \}/);
 
   const view = await mountBoard(loadBundle());
   // The create button is the panel's always-present disabled control: it is disabled until the title
@@ -1086,9 +1097,19 @@ test('P4.12: the browser surfaces are themed from the app tokens, each keeping i
   assert.match(styles, /\.kb-page ::selection \{ background: var\(--dsw-alias-bg-document-selection, [^)]+\)/);
   assert.match(styles, /\.kb-page \{ caret-color: var\(--dsw-alias-label-primary, inherit\)/);
   assert.match(styles, /\.kb-lanes, \.kb-drawer \{ scrollbar-width: thin;/);
-  assert.match(styles, /scrollbar-color: var\(--dsw-alias-scrollbar-bg-l1, var\(--kb-label-secondary\)\) var\(--dsw-alias-scrollbar-bg-l2, transparent\)/);
+  // The ladder's two names still resolve through the app's tokens, but the **track is transparent**,
+  // exactly as the app's own scrollbar writes it: both ladder tokens resolve to the same light
+  // neutral, so a filled track would paint a thumb at 1.00:1 and the scrollbar would read as a gap.
+  // The thumb's fallback is the sheet's visible de-emphasised mark, not a track-coloured value.
+  assert.match(styles, /scrollbar-color: var\(--dsw-alias-scrollbar-bg-l1, var\(--kb-label-secondary\)\) transparent/);
+  assert.equal(
+    styles.includes('scrollbar-color: var(--dsw-alias-scrollbar-bg-l1, var(--kb-label-secondary)) var(--dsw-alias-scrollbar-bg-l2, transparent)'),
+    false,
+    'the same-valued track is gone'
+  );
   assert.match(styles, /::-webkit-scrollbar-thumb \{[^}]*background: var\(--dsw-alias-scrollbar-bg-l1/);
   assert.match(styles, /::-webkit-scrollbar-thumb:hover \{[^}]*background: var\(--dsw-alias-scrollbar-hover-l1/);
+  assert.match(styles, /::-webkit-scrollbar-track \{[^}]*background: transparent/);
 });
 
 test('P4.13: the motion budget is stated in the sheet and cancelled under reduced motion', () => {
@@ -1527,16 +1548,23 @@ test('C3: checklist states are drawn, not typed as Unicode', async () => {
   view.unmount();
 });
 
-test('C4: the Alt+arrow path is surfaced on the drawer and the lanes', async () => {
+test('C4: the Alt+arrow path is surfaced on the card and the drawer, not on an inert lane', async () => {
   const view = await mountBoard(loadBundle());
   assert.equal(
     view.find('[data-card="T-003"]')?.getAttribute('aria-keyshortcuts'),
     'Alt+ArrowLeft Alt+ArrowRight'
   );
+  // The lane used to carry the same attribute on a div that is never focusable, where no reader can
+  // act on it -- `aria-keyshortcuts` describes a shortcut the *element* offers, and a lane offers
+  // none. The card does offer it, and the drawer spells it out. Asserting its absence is what stops
+  // the inert declaration from coming back as "surfacing the path".
   assert.equal(
     view.find('[data-lane="ready"]')?.getAttribute('aria-keyshortcuts'),
-    'Alt+ArrowLeft Alt+ArrowRight'
+    null,
+    'the lane is not focusable, so it cannot be the element that offers the shortcut'
   );
+  assert.equal(view.find('[data-lane="ready"]')?.getAttribute('role'), 'group', 'the lane is a named group');
+  assert.match(view.find('[data-lane="ready"]')?.getAttribute('aria-label') ?? '', /Ready, \d+ card/);
 
   await view.click('[data-card="T-003"]');
   await flush();
@@ -1553,6 +1581,213 @@ test('C5: done carries a drawn success mark, an unfinished card does not', async
   assert.equal(mark?.getAttribute('aria-hidden'), 'true', 'decorative: the lane header already says Done');
   assert.ok(view.find('[data-card="T-003"] .kb-mark') === null, 'the unreviewed card is not marked');
   view.unmount();
+});
+
+// ------------------------------------------------------------------ the validation pass
+
+/**
+ * The token values the app's own stylesheet resolves, re-read on 2026-10-16 from the installed
+ * `app.asar` (the same source the capture script uses) — the panel's colour claims are about colours
+ * it does not own, so a claim about a ratio can only be checked against the resolutions, which are
+ * not reachable from jsdom. These are the surface and text tokens the findings below are about.
+ */
+const RESOLVED: Readonly<Record<'light' | 'dark', Readonly<Record<string, string>>>> = {
+  light: {
+    'bg-base': '#ffffff',
+    'bg-layer-1': '#ffffff',
+    'label-primary': '#0f1115',
+    'label-secondary': '#61666b',
+    'label-tertiary': '#81858c',
+    'state-success-primary': '#22c55e',
+    'state-error-primary': '#ec1313',
+    'scrollbar-bg-l1': '#e5e5e5',
+    'scrollbar-bg-l2': '#e5e5e5',
+  },
+  dark: {
+    'bg-base': '#151517',
+    'bg-layer-1': '#232324',
+    'label-primary': '#f9fafb',
+    'label-secondary': '#cfd3d6',
+    'label-tertiary': '#adb2b8',
+    'state-success-primary': '#22c55e',
+    'state-error-primary': '#f25a5a',
+    'scrollbar-bg-l1': '#3c3c3d',
+    'scrollbar-bg-l2': '#545557',
+  },
+};
+
+/** WCAG relative luminance, so the ratios below are computed rather than asserted from memory. */
+function luminance(hex: string): number {
+  const digits = hex.replace('#', '');
+  const full = digits.length === 3 ? digits.replace(/./g, (digit) => digit + digit) : digits;
+  const int = Number.parseInt(full.slice(0, 6), 16);
+  const channel = (value: number): number => {
+    const c = value / 255;
+    return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * channel((int >> 16) & 0xff) + 0.7152 * channel((int >> 8) & 0xff) + 0.0722 * channel(int & 0xff);
+}
+
+function contrast(theme: 'light' | 'dark', foreground: string, background: string): number {
+  const a = luminance(RESOLVED[theme][foreground] as string);
+  const b = luminance(RESOLVED[theme][background] as string);
+  const [hi, lo] = a > b ? [a, b] : [b, a];
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+test('V1: Space opens a card, the way a real button would', async () => {
+  // APG's button pattern is Enter *and* Space. A `role="button"` div gets neither for free, and the
+  // Space branch did not exist: a keyboard user pressing Space got the page's own scroll, and
+  // PRODUCT.md's "anything an agent can do, Dhira can do by keyboard" was not true of the one
+  // interaction every card has. This is the same path Enter takes, asserted the same way.
+  const view = await mountBoard(loadBundle());
+  assert.equal(view.has('[data-drawer="T-003"]'), false, 'nothing is open to begin with');
+  await view.key('[data-card="T-003"]', ' ');
+  await flush();
+  assert.equal(view.has('[data-drawer="T-003"]'), true, 'Space opened the card');
+  assert.match(view.find('[data-drawer="T-003"]')?.getAttribute('aria-label') ?? '', /T-003/);
+  view.unmount();
+
+  // The legacy spelling some browsers still send, and Enter beside it, so neither path regressed as
+  // the branch grew a second key.
+  const legacy = await mountBoard(loadBundle());
+  await legacy.key('[data-card="T-004"]', 'Spacebar');
+  await flush();
+  assert.equal(legacy.has('[data-drawer="T-004"]'), true, 'the legacy key spelling opens it too');
+  legacy.unmount();
+
+  const enter = await mountBoard(loadBundle());
+  await enter.key('[data-card="T-002"]', 'Enter');
+  await flush();
+  assert.equal(enter.has('[data-drawer="T-002"]'), true, 'Enter still opens it');
+  enter.unmount();
+});
+
+test('V2: every named box is a role that may carry a name — group, region, or the card itself', async () => {
+  // ARIA 1.2 prohibits `aria-label` on a role-less `div` (the generic role): the name is inert. Four
+  // of these boxes were exactly that — the metrics strip, both checklist groups and the lane — plus
+  // the drawer, which had no role and no name at all. The roles below are the roles each box is.
+  const view = await mountBoard(loadBundle());
+  const named = (selector: string, role: string): void => {
+    const node = view.find(selector);
+    assert.ok(node !== null, `${selector} exists`);
+    assert.equal(node.getAttribute('role'), role, `${selector} is a ${role}`);
+    assert.equal((node.getAttribute('aria-label') ?? '').length > 0, true, `${selector} keeps its name`);
+  };
+  named('.kb-metrics', 'group');
+  named('[data-lane="ready"]', 'group');
+
+  await view.click('[data-card="T-003"]');
+  await flush();
+  named('.kb-checks', 'group');
+  const drawer = view.find('[data-drawer="T-003"]');
+  assert.equal(drawer?.getAttribute('role'), 'region', 'the drawer is a named region, not an anonymous box');
+  assert.match(drawer?.getAttribute('aria-label') ?? '', /T-003/);
+  // The board's announcer is the live region that must exist whether or not it has anything to say:
+  // a region inserted with its first message is one several readers never announce.
+  assert.equal(view.find('.kb-dim[role="status"][aria-live="polite"]') !== null, true, 'the announcer is mounted');
+  view.unmount();
+});
+
+test('V3: no element opacity is used to de-emphasise text — the label tokens are the ladder', async () => {
+  // The convergent finding: the disabled button (3.51:1), the busy lane row (2.53:1 light) and the
+  // placeholder under the UA's own ~0.54 all passed as *elements* and failed as *text*. Two of the
+  // three were element opacities in this sheet; the third is the UA's, and it is answered where it is
+  // written. The walk is over the sheet, so a fourth cannot be added without failing here.
+  const styles = readFileSync(new URL('../src/client/styles.ts', import.meta.url), 'utf8');
+  const dimmed = [...styles.matchAll(/([^{}]+)\{[^{}]*opacity:\s*0?\.[0-9]+/g)].map((match) => (match[1] as string).trim());
+  assert.deepEqual(dimmed, [], 'no selector dims a box with an element opacity');
+  assert.equal(styles.includes('opacity: 0.5'), false, 'the disabled button no longer dims itself');
+  assert.equal(styles.includes('opacity: 0.6'), false, 'nor does the busy board row');
+  assert.equal(styles.includes('opacity: 1'), true, 'the placeholder rule is the one opacity left, and it restores');
+
+  // The claim as a measurement, not as a rule name: the label tokens each de-emphasise and each pass.
+  for (const theme of ['light', 'dark'] as const) {
+    const label = contrast(theme, 'label-secondary', 'bg-base');
+    assert.ok(label >= 4.5, `label-secondary on the ${theme} card is ${label.toFixed(2)}:1`);
+  }
+  // The busy row's descendants that keep their own colour (the over-limit count, the P0 code, the
+  // drawn mark) are the point of a *colour* dim: they stay visible while the board is in flight,
+  // which an element opacity took away from them. Red is a state colour here, not body text, so the
+  // floor checked is the graphical one it has to clear on the two surfaces it can sit on. The light
+  // red measures 4.4976:1 on white -- the app's own value, which DESIGN.md rounds to 4.50 -- so the
+  // floor is 4.4 rather than a rounded 4.5 that the app's colour never quite reaches.
+  assert.ok(contrast('light', 'state-error-primary', 'bg-base') >= 4.4, 'an over-limit red survives the busy dim');
+  assert.ok(contrast('dark', 'state-error-primary', 'bg-base') >= 3, 'in both themes');
+  assert.ok(contrast('dark', 'state-error-primary', 'bg-layer-1') >= 3, 'on the lane as well as the card');
+});
+
+test('V4: the completion mark meets 3:1 because its tick is the foreground, not the success hue', async () => {
+  // The mark is a graphic, and the app's success token composites to 2.28:1 on the light card's white
+  // no matter the stroke width. So the frame carries the hue and the tick carries the contrast: read
+  // the authored rule, then measure the colour it names against the three surfaces it can sit on.
+  const styles = readFileSync(new URL('../src/client/styles.ts', import.meta.url), 'utf8');
+  assert.match(styles, /\.kb-mark \.kb-mark-tick \{ color: var\(--dsw-alias-label-primary, inherit\); \}/);
+  assert.match(styles, /\.kb-mark \{ align-self: center; flex: 0 0 auto; color: var\(--dsw-alias-state-success-primary,/);
+
+  const view = await mountBoard(loadBundle());
+  const tick = view.find('[data-card="T-005"] .kb-mark .kb-mark-tick');
+  assert.equal(tick?.tagName.toLowerCase(), 'path', 'the drawn tick is the part that took the second tone');
+  assert.ok(view.find('[data-card="T-003"] .kb-mark') === null, 'an unfinished card carries no completion mark');
+  view.unmount();
+
+  // The measured floor, in the theme where the hue failed it.
+  for (const surface of ['bg-base', 'bg-layer-1'] as const) {
+    const light = contrast('light', 'label-primary', surface);
+    const dark = contrast('dark', 'label-primary', surface);
+    assert.ok(light >= 3 && dark >= 3, `the tick is ${light.toFixed(2)}:1 / ${dark.toFixed(2)}:1 on ${surface}`);
+  }
+});
+
+test('V5: the scrollbar’s two halves resolve to different things, and the track is the app’s own', async () => {
+  // The defect: `bg-l1` and `bg-l2` both resolve to the same light neutral (1.00:1 thumb against
+  // track), so the thumb was invisible and the scrollbar read as a gap. The app's own rule writes a
+  // transparent track, which is what this now does; the assertion is on the declaration rather than
+  // on a ratio, because the ratio is the app's palette to own and the light thumb is still its own
+  // neutral.
+  const styles = readFileSync(new URL('../src/client/styles.ts', import.meta.url), 'utf8');
+  assert.match(styles, /scrollbar-color: var\(--dsw-alias-scrollbar-bg-l1, var\(--kb-label-secondary\)\) transparent;/);
+  assert.match(styles, /::-webkit-scrollbar-track \{[^}]*background: transparent/);
+  // Where the two tokens *do* differ (dark), the thumb is a visible step off the track — and in light
+  // the thumb sits on the lane, not on a same-valued fill, which is the whole repair. What the repair
+  // does **not** buy is 3:1 in either theme: the ladder is the app's, and the app never raises it.
+  // That shortfall is recorded in DESIGN.md rather than papered over here.
+  const darkGap = contrast('dark', 'scrollbar-bg-l1', 'scrollbar-bg-l2');
+  assert.ok(darkGap > 1.2, `dark thumb vs track is ${darkGap.toFixed(2)}:1`);
+  const lightGap = contrast('light', 'scrollbar-bg-l1', 'scrollbar-bg-l2');
+  assert.equal(Number(lightGap.toFixed(2)), 1, 'in light the two tokens are the same value — hence the transparent track');
+  assert.ok(contrast('light', 'scrollbar-bg-l1', 'bg-layer-1') > 1, 'and the thumb is at least off the surface it sits on');
+});
+
+test('V6: a dragover measures each card once per drag, not once per event', async () => {
+  // `getBoundingClientRect()` per card per `dragover` is layout work whose answer cannot change while
+  // the drag is live. jsdom returns zeros from it, so the test counts the calls rather than checking
+  // the geometry: the first event pays for the lane, the second must find the cache.
+  const container = loadBundle().dom.window.document;
+  const prototype = container.defaultView?.Element.prototype;
+  assert.ok(prototype !== undefined, 'the realm exposes the Element prototype');
+  const original = prototype.getBoundingClientRect;
+  let reads = 0;
+  prototype.getBoundingClientRect = function measured(this: Element): DOMRect {
+    reads += 1;
+    return original.call(this);
+  };
+  try {
+    const view = await mountBoard(loadBundle());
+    const cards = view.findAll('[data-lane="in-progress"] .kb-card').length;
+    assert.ok(cards > 0, 'the lane has cards to measure');
+    await view.dragStart('[data-card="T-002"]');
+    await flush();
+    assert.equal(reads, 0, 'starting a drag measures nothing');
+    await view.dragOver('[data-lane="in-progress"]', 5);
+    const afterFirst = reads;
+    assert.equal(afterFirst, cards, 'the first dragover measures each card exactly once');
+    await view.dragOver('[data-lane="in-progress"]', 20);
+    assert.equal(reads, afterFirst, 'and the second re-uses that measurement');
+    view.unmount();
+  } finally {
+    prototype.getBoundingClientRect = original;
+  }
 });
 
 test('C8: an empty lane is a rail, opens while a drag is live, and still takes the drop', async () => {
