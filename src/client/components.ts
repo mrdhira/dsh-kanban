@@ -21,7 +21,7 @@
 import type { ReactElement } from 'react';
 import type { BoardStore, BoardState } from './store.js';
 import { selectedTask } from './store.js';
-import { BOARD_STATES, DROPPED_FILTER, EMPTY_FILTER, actorKind, ageBand, ageDays, classLabel, columnsOf, filterStates, formatAge, formatPercent, formatStamp, hasFilter, moveTargets, priorityCode, priorityWord, sameFilter, type Column } from './model.js';
+import { BOARD_STATES, actorKind, ageBand, ageDays, classLabel, columnsOf, formatAge, formatPercent, formatStamp, moveTargets, priorityCode, priorityWord, type Column } from './model.js';
 import { beginDrag, dragOver, dropTarget, indexFromPointer, isDropAllowed, keyboardTarget, type DragState } from './dnd.js';
 import { API_PREFIX } from './api.js';
 import { STYLES, STYLE_ID } from './styles.js';
@@ -67,16 +67,15 @@ let drawerOpenedByKeyboard = false;
 /**
  * The empty board the pending state draws.
  *
- * Only the board's own state order is used — `filterStates(EMPTY_FILTER)`, the same five lanes the
- * real board draws — because that is all a pending column can honestly know: a state, a label and no
- * cards. **No limit is printed**: the Definition of Workflow arrives with the payload, and a pending
- * lane that printed `0/2` from this file's default could contradict the board it is standing in for.
- * So the loading state shows the same five lanes the real board will, each with one skeleton line
- * where a card will land, instead of an empty panel. Nothing else is invented: no card, no count, no
- * metric, no cap.
+ * Only the board's own state order is used — `BOARD_STATES`, the same six lanes the real board draws
+ * — because that is all a pending column can honestly know: a state, a label and no cards. **No limit
+ * is printed**: the Definition of Workflow arrives with the payload, and a pending lane that printed
+ * `0/2` from this file's default could contradict the board it is standing in for. So the loading
+ * state shows the same lanes the real board will, each with one skeleton line where a card will land,
+ * instead of an empty panel. Nothing else is invented: no card, no count, no metric, no cap.
  */
 function pendingColumns(): Column[] {
-  return filterStates(EMPTY_FILTER).map((state) => ({
+  return BOARD_STATES.map((state) => ({
     state,
     label: STATE_LABEL[state],
     cards: [],
@@ -289,7 +288,8 @@ function CardView(props: CardProps): ReactElement {
   if (task.classOfService === 'expedite') classes.push('kb-card-expedite');
   if (task.blockedReason !== null) classes.push('kb-card-blocked');
   // A dropped card says so by its whole card: dim, and beside the drawn tick, the one state that is
-  // neither a warning nor a verdict. It is only ever on screen in the Dropped view.
+  // neither a warning nor a verdict. Since the view row was removed it is simply the last lane on the
+  // board, so a dropped card is on screen without anyone asking for it.
   if (task.state === 'dropped') classes.push('kb-card-dropped');
   // The top row holds the id, the priority code and the age inside a 236px lane, so it keeps the
   // numbers and the words move down to the chip row, which wraps without breaking a token. The words
@@ -334,13 +334,11 @@ function CardView(props: CardProps): ReactElement {
       event.preventDefault();
       const target = keyboardTarget(task.state, event.key === 'ArrowLeft' ? 'left' : 'right');
       if (target === null) {
-        // A dropped card is not at an edge — it is not on the board at all. Saying "edge of the
-        // board" of a card the board refuses to draw is the kind of small lie this panel avoids.
-        onAnnounce(
-          task.state === 'dropped'
-            ? `${task.id} is dropped — open it and move it back to the board`
-            : `${task.id} is already at the edge of the board`
-        );
+        // One message for both ends, because they are the same fact: there is no lane further along
+        // the board in that direction. Backlog is the first lane, and `dropped` is the end of the
+        // order — a card sitting there was once told it "is dropped, open it and move it back", which
+        // stopped being true the moment the board drew every state and `Alt+←` gained a target.
+        onAnnounce(`${task.id} is already at the end of the board`);
         return;
       }
       onAnnounce(`${task.id} moved to ${target}`);
@@ -630,17 +628,19 @@ function Drawer(props: DrawerProps): ReactElement {
    * beside it, so nothing became unreachable; it only stopped competing. `dropped` is not in this
    * menu at all: a drop is reached through Drop and its reason, at the bottom.
    *
-   * A card whose state is not on the board — a dropped one, seen in the Dropped view — has no "next
-   * lane", so the primary move is the way back in: the first lane. Without that the drawer of a
-   * dropped card offered `Close` and nothing else, which is the same defect as having no view at all,
-   * one layer deeper.
+   * **A dropped card is the one case with no "next lane".** `dropped` is now the last drawn lane, but
+   * it is not a step in the workflow — it is where a card goes when it leaves — so its primary move is
+   * the way back in, `backlog`, the first lane. Without that the drawer of a dropped card offered
+   * `Close` and nothing else, which is the same defect as having no lane at all, one layer deeper.
+   * This is asked by state, not by `indexOf`: once the board drew every state, `dropped` had an index
+   * and the old "is it off the board?" branch silently stopped answering for it.
    */
   const here = BOARD_STATES.indexOf(task.state);
-  const next =
-    here >= 0 && here + 1 < BOARD_STATES.length
-      ? (BOARD_STATES[here + 1] as State)
-      : here < 0
-        ? (BOARD_STATES[0] as State | undefined) ?? null
+  const next: State | null =
+    task.state === 'dropped'
+      ? ((BOARD_STATES[0] as State | undefined) ?? null)
+      : here >= 0 && here + 1 < BOARD_STATES.length
+        ? (BOARD_STATES[here + 1] as State)
         : null;
   const otherMoves = BOARD_STATES.filter((target) => target !== task.state && target !== next);
   const moveButton = (target: State): ReactElement =>
@@ -1113,12 +1113,6 @@ export function BoardPage(props: BoardProps): ReactElement {
   const columns = state.payload === null ? (loading ? pendingColumns() : []) : columnsOf(state.payload, state.filter);
   const shown = columns.reduce((total, column) => total + column.cards.length, 0);
   const total = state.payload?.total ?? 0;
-  const filtered = hasFilter(state.filter);
-  // The view row's one narrowing control. The state chip row was distilled away on purpose — the
-  // view buttons are the panel's state filtering — but that cut removed the only path a human had to
-  // a *single* state, which made "only Done" an agent's `kanban_list({ state: … })` and nobody
-  // else's. One select restores it and adds no row: the primitive was already in the sheet.
-  const narrowedState = state.filter.state !== undefined && state.filter.state.length === 1 ? state.filter.state[0] : '';
   const task = selectedTask(state);
   const onAnnounce = (message: string): void => setAnnouncement(message);
   const child = { React, state, store, onAnnounce, cardNodes };
@@ -1130,19 +1124,18 @@ export function BoardPage(props: BoardProps): ReactElement {
       'div',
       { className: 'kb-head' },
       React.createElement('h1', { className: 'kb-title' }, state.payload?.title ?? 'Kanban'),
-      // The count line folds the filter's own answer into what is drawn, so a narrowed board says so
-      // in the header instead of in a row of its own. The test is `shown !== total`, not `filtered`:
-      // an unfiltered board still draws fewer cards than the host holds when one is `dropped` (it has
-      // no lane) or the read was truncated, and a header that said "6 cards" over five drawn cards is
-      // the kind of small lie this board exists to avoid. **The revision is not here**: `rev 7` is
-      // developer vocabulary on the operator's front line, so it travels with the host line behind
-      // the `Host` disclosure in the metrics strip.
+      // The count line folds what is on screen into one honest sentence. The test is `shown !== total`
+      // and nothing else: the only thing that can now hide a card is the search box or a truncated
+      // read, and either way a header that said "6 cards" over five drawn cards is the kind of small
+      // lie this board exists to avoid. **The revision is not here**: `rev 7` is developer vocabulary
+      // on the operator's front line, so it travels with the host line behind the `Host` disclosure in
+      // the metrics strip.
       React.createElement(
         'span',
         { className: 'kb-sub' },
         state.payload === null
           ? 'connecting…'
-          : filtered || shown !== total
+          : shown !== total
             ? `showing ${shown} of ${total} cards`
             : `${total} cards`
       ),
@@ -1161,78 +1154,20 @@ export function BoardPage(props: BoardProps): ReactElement {
         onChange: (event: { target: { value: string } }) =>
           store.setFilter({ ...state.filter, search: event.target.value.length === 0 ? undefined : event.target.value }),
       }),
-      // One filter control, not two: the views below are the panel's state filtering. The chip row
-      // that used to sit here repeated the lane headers and the views, and it is gone. `All` is not
-      // one of the saved views — a board seeded with Board and Ageing has no unfiltered view — so it
-      // stays as the way back out of both, and the only way to see finished cards from the panel.
-      React.createElement(
-        'nav',
-        { 'aria-label': 'Views', className: 'kb-bar' },
-        ...(state.payload?.views ?? []).map((view) =>
-          React.createElement(
-            'button',
-            {
-              key: view.id,
-              className: 'kb-btn',
-              type: 'button',
-              title: view.description,
-              'aria-pressed': sameFilter(state.filter, view.filter),
-              onClick: () => store.setFilter(view.filter),
-            },
-            view.name
-          )
-        ),
-        React.createElement(
-          'button',
-          {
-            className: 'kb-btn',
-            type: 'button',
-            'data-action': 'all',
-            // `!filtered`, not `sameFilter(...)`: a *search-only* filter draws exactly the same lanes
-            // as no filter, so no view is pressed and `All` is the one control that can be said to be
-            // showing — pressing it is what clears the box. Marking nothing pressed while the board is
-            // narrowed by text would leave the row with no answer to "which of these am I in?".
-            'aria-pressed': !filtered,
-            onClick: () => store.setFilter(EMPTY_FILTER),
-          },
-          'All'
-        ),
-        // `dropped` has no lane on the board — by design, and the brief for this pass repeats it — but
-        // a card can be dropped from the drawer and the state had no view, so a dropped card left the
-        // panel and the only way back to it was the CLI. This is the narrowest fix: not a sixth lane,
-        // just a view that names the one state the board refuses to draw. It is a peer of the saved
-        // views and `All` rather than a new control, and `All` keeps its escape role unchanged.
-        React.createElement(
-          'button',
-          {
-            className: 'kb-btn',
-            type: 'button',
-            'data-action': 'dropped',
-            'aria-pressed': sameFilter(state.filter, DROPPED_FILTER),
-            onClick: () => store.setFilter(DROPPED_FILTER),
-          },
-          'Dropped'
-        )
-      ),
-      // The one narrowing control the view row gets, and the only new surface this pass adds: a
-      // `select.kb-input` listing every state. Choosing one narrows the board to that state alone
-      // (choosing the empty option clears the filter, exactly as `All` does). No chip row returns:
-      // per-state chips are a second surface for a question one picker answers.
-      React.createElement(
-        'select',
-        {
-          className: 'kb-input',
-          'data-select': 'view-state',
-          'aria-label': 'Narrow to one state',
-          value: narrowedState,
-          onChange: (event: { target: { value: string } }) => {
-            const chosen = event.target.value;
-            store.setFilter(chosen.length === 0 ? EMPTY_FILTER : { state: [chosen as State] });
-          },
-        },
-        React.createElement('option', { value: '' }, filtered ? 'current view' : 'all states'),
-        ...STATES.map((entry) => React.createElement('option', { key: entry, value: entry }, STATE_LABEL[entry]))
-      ),
+      // **The view row is gone, and no state filter replaces it.** The user's verdict was *"Remove it,
+      // do not group by that, I think it's not common, just view all"*: the `Board | Ageing | All |
+      // Dropped` row and the `all states` select that followed it are both removed, and the board now
+      // draws every state as a lane with `dropped` last, so nothing needs a control to make one
+      // reachable. The panel's toolbar is therefore one search box, one title field and `Add`.
+      //
+      // Two notes for whoever reads this next. The select was the fresh critique's item 18 — "the
+      // human lost single-state narrowing" — and removing it is a deliberate override, not an
+      // oversight: narrowing to one state now belongs to the agent's `kanban_list({ state: … })` and
+      // `bin/kanban.mjs --state`, which still take it. And the ageing information survives the loss of
+      // the `Ageing` view without a control of its own: the metrics strip's lead already reads
+      // `Oldest 1.5d vs 3d SLE · 0 past`, which is what that view was for. The board's saved views are
+      // untouched at the data level (`board.db`, the `views` payload field, the store and the host
+      // API), so nothing here changes what an agent or the CLI can ask for.
       React.createElement('span', { className: 'kb-spacer' }),
       React.createElement('input', {
         className: 'kb-input',

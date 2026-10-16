@@ -65,6 +65,50 @@ in the code where the intent was right and in the claim where it was not:
   `Alt+←/→` on a dropped card says it is dropped rather than at an edge, and `More metrics` carries
   the cycle's median, p85 and mean.
 
+## Unreleased — the view row removed, and every state drawn
+
+Dhira's verdict on the view switcher was *"Remove it, do not group by that, I think it's not common,
+just view all."* Taken literally, that means no view row and no state filter on the panel, and a
+board that draws every state.
+
+### Removed
+
+- **The `Board | Ageing | All | Dropped` view row.** The panel no longer renders the saved views the
+  payload carries, the unfiltered `All` button or the `Dropped` button. `board.db`, the `views`
+  payload field, the store, the host API and `kanban_list` / `bin/kanban.mjs --state` are untouched:
+  the switcher was a panel affordance, not the data.
+- **The `all states` select** added by the previous pass. It was the fresh critique's item 18 ("the
+  human lost single-state narrowing") and the user overrode it deliberately — single-state narrowing
+  is the tools' job again. Deleted, not deprecated: no disabled control is left behind.
+- **`filterStates()` and `DROPPED_FILTER` in `model.ts`**, and `sameFilter` with the buttons that
+  compared filters. `hasFilter` went too: it was the header's "nothing is narrowed" test, and the
+  header now compares what is drawn against what the host holds (`shown !== total`) — the honest test,
+  because a truncated read hides cards with no filter at all.
+
+### Changed
+
+- **The board draws every state as a lane, `dropped` last** — `backlog, ready, in-progress, review,
+  done, dropped`. `BOARD_STATES` is `STATES`, and `columnsOf` maps it directly: no filter can take a
+  lane away, because the only filter the panel sets is the search box. The `dropped` lane is what
+  keeps a dropped card reachable from the panel — two passes ago it was invisible and the CLI was the
+  only way back, and that defect stays closed. Empty lanes keep the content-width dashed slot, so the
+  sixth lane costs little when it is empty.
+- **The toolbar is the search box, the title field and `Add`.** Nothing else.
+- **A dropped card's drawer leads with `→ Backlog` again** — and this time it really does. The primary
+  move was computed with `… : here < 0 ? BOARD_STATES[0] ?? null : null`, and `??` binds looser than
+  `?:`, so the whole conditional was its left operand: once `dropped` had an index on the board, the
+  branch stopped answering and the drawer offered `Close` and nothing else. The move set now asks by
+  state, and the DOM suite pins the button rather than the drawer's mere presence.
+- **`Alt+←/→` from `done` now moves to `dropped`**, and from `dropped` back to `done`, because the
+  board order includes the dropped lane. `dropped` remains the end of that order.
+- **The pending board draws six lanes**, the same ones the answered board will.
+
+### Still true
+
+The ageing information survives the loss of the `Ageing` view: the metrics strip's lead already reads
+`Oldest 1.5d vs 3d SLE · 0 past`. The header's honesty line is unchanged — `N cards` when every card
+the board holds is drawn, `showing X of Y cards` when the search or a truncated read hides one.
+
 ## 1.0.0 — 2026-10-15
 
 First release. One live check is still outstanding and is stated rather than implied: **this running

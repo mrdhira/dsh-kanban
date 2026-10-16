@@ -31,22 +31,20 @@ import {
 } from './harness.ts';
 import { resolveOrigin } from '../lib/v1/client/api.js';
 import { createBoardStore } from '../lib/v1/client/store.js';
-import { DROPPED_FILTER, EMPTY_FILTER, checkMoveLocally, columnsOf, filterStates, sameFilter } from '../lib/v1/client/model.js';
+import { EMPTY_FILTER, checkMoveLocally, columnsOf } from '../lib/v1/client/model.js';
 import { PRIORITIES } from '../lib/v1/store/index.js';
 
 const FULL_DOR = Object.fromEntries(
   ['outcome', 'acceptance', 'write-scope', 'estimate'].map((id) => [id, { at: '2026-10-01T00:00:00.000Z', by: 'human:dhira' }])
 );
 
-/** A filter the store reports as the current view: a ready card and everything past the gate. */
-const READY_VIEW = { state: ['ready', 'in-progress', 'review', 'done'] };
-
 /**
  * The two views every new board is seeded with, as the host sends them.
  *
- * `All` is deliberately **not** among them: it is the panel's own clear-the-filter control. That is
- * why it survives the distill pass — without it, choosing `Board` would be a one-way door and the
- * finished cards would be unreachable from the panel.
+ * The panel no longer renders a control for either one — the view row is gone — but the payload still
+ * carries them, and the host, the store, `board.db` and the CLI's `--state` all still speak `views`.
+ * The fixture keeps them so the tests can prove the panel ignores them rather than that the data
+ * vanished: a mounted board with seeded views must draw the same six lanes as one without.
  */
 const SEEDED_VIEWS = [
   { id: 'board', name: 'Board', description: 'everything still moving', filter: { state: ['backlog', 'ready', 'in-progress', 'review'] } },
@@ -55,8 +53,9 @@ const SEEDED_VIEWS = [
 
 /**
  * The board the DOM tests render: one refined backlog card, one ready, two in progress, one done, and
- * one **dropped** card — the state the board has no lane for, and the reason the `Dropped` view has to
- * exist: without it the card is in the store, in the counts and in the metrics, and nowhere on screen.
+ * one **dropped** card. The dropped card has its own lane at the end of the board — the change this
+ * pass makes — so a dropped card is on screen without any control asking for it, and the suite can
+ * pin both that reachability and the absence of the view row that used to provide it.
  */
 function fixture(): Record<string, unknown> {
   const payload = boardPayload();
@@ -109,7 +108,7 @@ test('the client half injects only slots', () => {
 test('the panel draws one lane per board state, in board order', async () => {
   const view = await mountBoard(loadBundle());
   const lanes = view.findAll('[data-lane]').map((node) => node.getAttribute('data-lane'));
-  assert.deepEqual(lanes, ['backlog', 'ready', 'in-progress', 'review', 'done']);
+  assert.deepEqual(lanes, ['backlog', 'ready', 'in-progress', 'review', 'done', 'dropped']);
   view.unmount();
 });
 
@@ -146,10 +145,11 @@ test('a lane past its limit says so', async () => {
 
 test('the header states the count plainly, and the host line waits behind its disclosure in the strip', async () => {
   const view = await mountBoard(loadBundle());
-  // `rev 7` and the transport URL are developer vocabulary, and the operator's front line is a task
-  // board: it says what is on it. The revision now travels with the host line, one disclosure deep.
+  // Every card the board holds has a lane now, so the front line says the plain count: the "showing X
+  // of Y" form is for a search or a truncated read, not for a state the board declines to draw.
   const head = (): string => view.find('.kb-head')?.textContent ?? '';
-  assert.match(head(), /showing 5 of 6 cards/);
+  assert.match(head(), /6 cards/);
+  assert.equal(head().includes('showing'), false, 'nothing is hidden, so nothing is claimed to be');
   assert.equal(head().includes('rev'), false, 'no revision on the front line');
   assert.equal(view.text().includes('host http://localhost'), false, 'the host line is not on the front');
 
@@ -168,19 +168,31 @@ test('the header states the count plainly, and the host line waits behind its di
   view.unmount();
 });
 
-test('the header count matches what is drawn, not what the host holds', async () => {
-  // The fixture holds six cards and the board draws five: the sixth is dropped, and the board has no
-  // lane for it. The header used to print "6 cards" over five drawn cards. A count that disagrees
-  // with the screen is the kind of small lie this board exists to avoid, so the unfiltered header
-  // states both numbers whenever the board cannot draw everything it holds.
+test('every state has a lane, dropped last, and the board draws everything it holds', async () => {
+  // The board is the whole workflow now: no view narrows the lanes, so the sixth lane is the end of
+  // the board rather than a surface someone has to ask for. That lane is what keeps a dropped card
+  // reachable — two passes ago it was invisible from the panel and the CLI was the only way back, and
+  // this pass must not re-open that defect.
   const view = await mountBoard(loadBundle());
-  assert.equal(view.findAll('[data-card]').length, 5, 'five cards are drawn');
-  assert.match(view.find('.kb-head')?.textContent ?? '', /showing 5 of 6 cards/, 'and the header accounts for the sixth');
-  assert.equal((view.find('.kb-head')?.textContent ?? '').includes('5 cards'), false, 'never a total that disagrees with the screen');
+  assert.deepEqual(
+    view.findAll('[data-lane]').map((node) => node.getAttribute('data-lane')),
+    ['backlog', 'ready', 'in-progress', 'review', 'done', 'dropped'],
+    'six lanes, every state, dropped last'
+  );
+  assert.equal(view.findAll('[data-card]').length, 6, 'six cards are drawn, including the dropped one');
+  assert.equal(view.has('[data-card="T-006"]'), true, 'the dropped card is on the board without being asked for');
+  assert.match(view.find('.kb-head')?.textContent ?? '', /6 cards/, 'and the header agrees with the screen');
 
-  // A board that draws every card it holds keeps the short form rather than a redundant "5 of 5".
+  // Every state keeps its lane even when nothing is in it: the lane list is the state list, not the
+  // cards that happen to exist. An empty lane costs a content-width dashed slot, which is what makes
+  // drawing all six affordable.
   const whole = await mountBoard(loadBundle(), boardPayload());
-  assert.equal((whole.find('.kb-head')?.textContent ?? '').includes('5 cards'), true);
+  assert.deepEqual(
+    whole.findAll('[data-lane]').map((node) => node.getAttribute('data-lane')),
+    ['backlog', 'ready', 'in-progress', 'review', 'done', 'dropped'],
+    'and an empty board still names every state'
+  );
+  assert.equal(whole.find('[data-lane="dropped"]')?.className.includes('kb-lane-empty'), true, 'the empty dropped lane is a slot');
   whole.unmount();
   view.unmount();
 });
@@ -261,7 +273,7 @@ test('Alt+ArrowLeft at the first lane moves nothing and says so', async () => {
   await view.key('[data-card="T-001"]', 'ArrowLeft', { altKey: true });
   await flush();
   assert.equal(lastMutation(), undefined, 'no mutation for a move off the board');
-  assert.match(view.text(), /already at the edge/);
+  assert.match(view.text(), /already at the end of the board/);
   view.unmount();
 });
 
@@ -470,120 +482,72 @@ test('a 304 leaves the snapshot object identical, so React is not asked to rende
   view.unmount();
 });
 
-test('the active view button says so, and the count says how much is hidden', async () => {
-  const payload = fixture();
-  const view = await mountBoard(loadBundle(), {
-    ...payload,
-    views: [{ id: 'v-ready', name: 'Ready', description: 'ready and beyond', filter: READY_VIEW }],
-  });
-
-  const pressed = (): (string | null)[] =>
-    view.findAll('nav[aria-label="Views"] .kb-btn[aria-pressed="true"]').map((node) => node.textContent);
-  // Two controls are pressed with nothing filtered: `All`, which is the unfiltered board, and
-  // `Dropped`, whose view is the only way to the state the board does not draw. They are not in
-  // conflict — `All` is everything, `Dropped` is one state — and neither is a saved view.
-  assert.deepEqual(pressed(), ['All'], 'with no filter, All is the current view and the saved view is not');
-  assert.match(view.text(), /6 cards/);
-  assert.equal(view.has('nav[aria-label="Views"]'), true, 'the switcher is one named control group');
-
-  // The saved view is the only unpressed *view* button; `Dropped` is always present, so it is named
-  // rather than counted, and the assertion above pins which buttons claim the current board.
-  await view.click('nav[aria-label="Views"] button[title="ready and beyond"]');
-  await flush();
-
-  // A filtered board must be distinguishable from an unfiltered one, in the toolbar itself.
-  assert.deepEqual(pressed(), ['Ready']);
-  assert.match(view.text(), /showing 4 of 6 cards/);
-  assert.equal(view.has('[data-card="T-001"]'), false, 'the backlog card is filtered out');
-  assert.equal(view.has('[data-card="T-002"]'), true);
-  assert.equal(view.has('[data-card="T-006"]'), false, 'and the dropped card is never on a filtered board');
-  view.unmount();
-});
-
-test('the state chip row is gone, and the views are the panel filter', async () => {
+test('the view row is gone: no view buttons, no state select, and every state still drawn', async () => {
+  // The user's verdict was *"Remove it, do not group by that, I think it's not common, just view
+  // all."* The assertion that matters is the **absence**: a default board carries no `Board / Ageing /
+  // All / Dropped` button and no `all states` select, and the payload's views do not bring one back.
   const view = await mountBoard(loadBundle(), { ...fixture(), views: SEEDED_VIEWS });
-  // The row repeated what the lane headers already said. It is not hidden, it is absent.
-  assert.equal(view.findAll('[data-state]').length, 0, 'no per-state chip row');
-  assert.equal(view.find('[data-lane="review"] .kb-lane-name')?.textContent, 'Review', 'the lanes still name every state');
-  assert.equal(view.has('[data-card="T-005"]'), true, 'the unfiltered board shows the finished card');
+  assert.equal(view.has('nav[aria-label="Views"]'), false, 'the switcher group is not rendered');
+  assert.equal(view.findAll('select').length, 0, 'and no state select replaced it');
+  assert.equal(view.has('[data-select="view-state"]'), false, 'the removed picker is not hiding anywhere');
+  assert.equal(view.findAll('[data-action="all"]').length, 0, 'All went with the row it belonged to');
+  assert.equal(view.findAll('[data-action="dropped"]').length, 0, 'and so did Dropped — the lane is the way there now');
+  assert.equal(view.findAll('[data-state]').length, 0, 'no chip row came back either');
+  assert.equal(view.findAll('[data-card]').length, 6, 'the seeded views filter nothing: every card is still drawn');
 
-  await view.click('nav[aria-label="Views"] button[title="everything still moving"]');
-  await flush();
-  const board = view.find('nav[aria-label="Views"] button[title="everything still moving"]');
-  assert.equal(board?.getAttribute('aria-pressed'), 'true', 'the view presses itself');
-  assert.equal(view.has('[data-card="T-005"]'), false, 'Board filters the done lane out');
-  assert.match(view.text(), /showing 4 of 6 cards/, 'and the header says how much is hidden');
-
-  // `All` is the way back out. It is not redundant with the saved views: it is the only one that
-  // shows `done`, so deleting it would put finished cards out of the panel's reach.
-  await view.click('[data-action="all"]');
-  await flush();
-  assert.equal(view.find('[data-action="all"]')?.getAttribute('aria-pressed'), 'true');
-  assert.equal(view.has('[data-card="T-005"]'), true, 'the finished card is back');
+  // The seeded views are still in the payload — the host, the store and the CLI keep them — so this
+  // board with views and a board without them must be the same board.
+  const bare = await mountBoard(loadBundle(), fixture());
+  assert.deepEqual(
+    bare.findAll('[data-lane]').map((node) => node.getAttribute('data-lane')),
+    ['backlog', 'ready', 'in-progress', 'review', 'done', 'dropped'],
+    'a board with no views at all draws the same six lanes'
+  );
+  bare.unmount();
   view.unmount();
 });
 
-// ------------------------------------------------------------------ P1.1 the Dropped view
-
-test('P1.1: the default board is still five lanes, and dropped is not one of them', async () => {
-  // The invariant this pass must not break: the distill removed a sixth lane and it stays removed.
-  // The dropped card in the fixture is in the store, the counts and the metrics and nowhere on the
-  // default board — which is exactly why the view below has to exist.
+test('the search is the panel filter, and the header still accounts for it', async () => {
   const view = await mountBoard(loadBundle());
-  assert.deepEqual(
-    view.findAll('[data-lane]').map((node) => node.getAttribute('data-lane')),
-    ['backlog', 'ready', 'in-progress', 'review', 'done'],
-    'five lanes, no sixth'
-  );
-  assert.equal(view.has('[data-card="T-006"]'), false, 'the dropped card is not drawn on the board');
-  assert.equal(view.has('[data-action="dropped"]'), true, 'but the view that reaches it is');
-  assert.equal(
-    view.find('[data-action="dropped"]')?.getAttribute('aria-pressed'),
-    'false',
-    'the view exists without claiming the board'
-  );
-  assert.equal(view.find('[data-action="all"]')?.getAttribute('aria-pressed'), 'true', 'All still means unfiltered');
+  assert.equal(view.has('[data-card="T-005"]'), true, 'the finished card is on the board');
+  assert.equal(view.has('[data-card="T-006"]'), true, 'and so is the dropped one');
+  assert.match(view.find('.kb-head')?.textContent ?? '', /6 cards/, 'nothing is hidden yet');
+
+  await view.type('input[type="search"]', 'T-003');
+  await flush();
+  assert.equal(view.has('[data-card="T-003"]'), true, 'the matching card stays');
+  assert.equal(view.has('[data-card="T-005"]'), false, 'a filtered-out card is gone');
+  assert.equal(view.has('[data-card="T-006"]'), false, 'including the dropped one');
+  assert.match(view.find('.kb-head')?.textContent ?? '', /showing 1 of 6 cards/, 'and the header says how much is hidden');
+
+  // Clearing the box is the only way back, because the row that used to carry a clear-the-filter
+  // control is gone: the search input is the filter.
+  await view.type('input[type="search"]', '');
+  await flush();
+  assert.equal(view.has('[data-card="T-005"]'), true, 'the board comes back');
+  assert.match(view.find('.kb-head')?.textContent ?? '', /6 cards/);
   view.unmount();
 });
 
-test('P1.1: the Dropped view draws the dropped lane and nothing else', async () => {
-  const view = await mountBoard(loadBundle());
-  await view.click('[data-action="dropped"]');
-  await flush();
+// ------------------------------------------------------------------ P1.1 dropped cards stay reachable
 
-  assert.deepEqual(
-    view.findAll('[data-lane]').map((node) => node.getAttribute('data-lane')),
-    ['dropped'],
-    'one lane, the one state the board otherwise refuses to draw'
-  );
-  assert.equal(view.has('[data-card="T-006"]'), true, 'the card that vanished is reachable');
-  assert.equal(view.find('[data-card="T-006"]')?.className.includes('kb-card-dropped'), true, 'and marked as out of play');
-  assert.equal(view.find('[data-action="dropped"]')?.getAttribute('aria-pressed'), 'true');
-  assert.equal(view.find('[data-action="all"]')?.getAttribute('aria-pressed'), 'false', 'All is not claiming the board');
-  assert.match(view.text(), /showing 1 of 6 cards/, 'the header says what is on screen');
+test('P1.1: a dropped card is drawn in its own lane, last, without any control asking for it', async () => {
+  // The invariant this pass must not break: a dropped card was invisible from the panel two passes
+  // ago and the CLI was the only way back. It is reachable now because the board draws every state
+  // and `dropped` is the last lane — not because a view row narrows the board to it.
+  const view = await mountBoard(loadBundle());
+  const lanes = view.findAll('[data-lane]').map((node) => node.getAttribute('data-lane'));
+  assert.equal(lanes[lanes.length - 1], 'dropped', 'the dropped lane is the last lane');
+  assert.equal(view.has('[data-card="T-006"]'), true, 'and the dropped card is drawn in it');
+  assert.equal(view.find('[data-card="T-006"]')?.className.includes('kb-card-dropped'), true, 'marked as out of play');
+  assert.equal(view.find('[data-lane="dropped"]')?.getAttribute('aria-label'), 'Dropped, 1 card');
   view.unmount();
 });
 
-test('P1.1: All stays the escape from the Dropped view, and the dropped card can be taken back', async () => {
+test('P1.1: a dropped card can be taken back to the board through the panel', async () => {
+  // Reachability was the whole defect, so it is pinned as a round trip: open the card where it lies
+  // and move it through the panel's own move set.
   const view = await mountBoard(loadBundle());
-  await view.click('[data-action="dropped"]');
-  await flush();
-  assert.deepEqual(view.findAll('[data-lane]').map((node) => node.getAttribute('data-lane')), ['dropped']);
-
-  // `All` is untouched by this pass: the way back out of a view still works, and it is still the only
-  // control that shows finished cards.
-  await view.click('[data-action="all"]');
-  await flush();
-  assert.deepEqual(
-    view.findAll('[data-lane]').map((node) => node.getAttribute('data-lane')),
-    ['backlog', 'ready', 'in-progress', 'review', 'done']
-  );
-  assert.equal(view.has('[data-card="T-006"]'), false, 'and the dropped card is out of play again');
-
-  // The way back *into* play: the card in the Dropped view is a real card, so opening it and moving it
-  // through the panel's own move set returns it to the board. Reachability was the whole defect.
-  await view.click('[data-action="dropped"]');
-  await flush();
   await view.click('[data-card="T-006"]');
   await flush();
   assert.equal(view.has('[data-drawer="T-006"]'), true);
@@ -596,36 +560,41 @@ test('P1.1: All stays the escape from the Dropped view, and the dropped card can
   view.unmount();
 });
 
-test('P1.1: Alt+←/→ on a dropped card says it is dropped, not that it is at an edge', async () => {
-  // A dropped card is not at the edge of the board — it is not on the board at all, which is why the
-  // keyboard target is null. Telling a reader it is "already at the edge" of a board that refuses to
-  // draw it is a small lie, and the drawer's `→ Backlog` is the real answer.
+test('P1.1: Alt+→ at the end of the board announces it, and Alt+← from a dropped card is a real move', async () => {
+  // `dropped` is the last lane, so `Alt+→` on a card sitting there has nothing further along — the
+  // same "end of the board" a backlog card meets going left. It used to say the card "is dropped,
+  // open it and move it back", which stopped being true once the board drew every state: `Alt+←` is
+  // now a real target for a dropped card, the lane before it.
   const view = await mountBoard(loadBundle());
-  await view.click('[data-action="dropped"]');
-  await flush();
   await view.focus('[data-card="T-006"]');
   await view.key('[data-card="T-006"]', 'ArrowRight', { altKey: true });
   await flush();
-  assert.match(view.text(), /T-006 is dropped/);
-  assert.equal(view.text().includes('edge of the board'), false, 'a dropped card is not at an edge');
-  assert.equal(lastMutation(), undefined, 'and the panel did not invent a move to send to the host');
+  assert.match(view.text(), /T-006 is already at the end of the board/);
+  assert.equal(lastMutation(), undefined, 'the end of the board is not a move');
+
+  // Going left now goes somewhere: `Done` is the lane before `dropped` in the board's own order. The
+  // move it produces is subject to the same gates as any other — and this board's Done lane is at its
+  // limit — so the assertion is on the keyboard path's *intent* reaching the store, not on the card
+  // landing.
+  await view.key('[data-card="T-006"]', 'ArrowLeft', { altKey: true });
+  await flush();
+  assert.equal(view.text().includes('T-006 is already at the end of the board'), false, 'left is not the end');
+  assert.match(view.text(), /cannot enter done: 5 Definition of Done check\(s\) unticked/, 'the move runs the lane gates like any other');
   view.unmount();
 });
 
-test('P1.1: only a filter that names dropped draws the dropped lane', () => {
-  // The narrow rule, at the level where it is decided. `All` (the empty filter) keeps the board's five
-  // lanes, a saved view that happens to include dropped still draws the board, and only an explicit
-  // `['dropped']` — the panel's own view — swaps the lanes. That is what keeps this from becoming a
-  // sixth lane by the back door.
-  assert.deepEqual(filterStates(EMPTY_FILTER), ['backlog', 'ready', 'in-progress', 'review', 'done']);
-  assert.deepEqual(filterStates(DROPPED_FILTER), ['dropped']);
-  assert.deepEqual(filterStates({ state: ['dropped'], priority: ['p0-critical'] }), ['dropped'], 'a saved filter that names dropped is still a dropped filter');
-  assert.deepEqual(filterStates({ state: ['dropped', 'done'] }), ['backlog', 'ready', 'in-progress', 'review', 'done'], 'dropped alongside another state is the board, as it always was');
-  assert.deepEqual(filterStates({ search: 'x' }), ['backlog', 'ready', 'in-progress', 'review', 'done']);
-  // And the drawn columns follow the same rule, so the promise holds where it is rendered.
+test('the drawn columns are every state in board order, whatever the filter names', () => {
+  // The rule at the level where it is decided, now that no filter can change the lane list: the
+  // filter narrows cards, never lanes. This is what keeps "view all" literal.
   const payload = boardPayload() as unknown as Parameters<typeof columnsOf>[0];
-  assert.deepEqual(columnsOf(payload, EMPTY_FILTER).map((column) => column.state), ['backlog', 'ready', 'in-progress', 'review', 'done']);
-  assert.deepEqual(columnsOf(payload, DROPPED_FILTER).map((column) => column.state), ['dropped']);
+  const all: string[] = ['backlog', 'ready', 'in-progress', 'review', 'done', 'dropped'];
+  assert.deepEqual(columnsOf(payload, EMPTY_FILTER).map((column) => column.state), all);
+  assert.deepEqual(columnsOf(payload, { state: ['dropped'] }).map((column) => column.state), all, 'a saved filter that names dropped does not remove the other lanes');
+  assert.deepEqual(columnsOf(payload, { state: ['dropped', 'done'] }).map((column) => column.state), all);
+  assert.deepEqual(columnsOf(payload, { search: 'T-003' }).map((column) => column.state), all, 'and neither does the search');
+  // The cards inside those lanes are what the filter narrows.
+  const searched = columnsOf(payload, { search: 'T-003' });
+  assert.deepEqual(searched.map((column) => column.cards.length), [0, 0, 1, 0, 0, 0], 'only the matching card is drawn');
 });
 
 // ------------------------------------------------------------------ P1.2 the drawer's ring
@@ -731,12 +700,12 @@ test('P2.3: a pending lane prints no limit it cannot know', async () => {
   await flush();
   assert.deepEqual(
     view.findAll('[data-lane]').map((node) => node.getAttribute('data-lane')),
-    ['backlog', 'ready', 'in-progress', 'review', 'done'],
-    "the pending board draws the board's own five lanes"
+    ['backlog', 'ready', 'in-progress', 'review', 'done', 'dropped'],
+    "the pending board draws every lane the answered board will, the dropped one last"
   );
   assert.deepEqual(
     view.findAll('.kb-lane-count').map((node) => node.textContent),
-    ['0', '0', '0', '0', '0'],
+    ['0', '0', '0', '0', '0', '0'],
     'and no lane prints a cap it has not been told'
   );
   view.unmount();
@@ -969,12 +938,10 @@ test('P2.5: a disabled control reads as disabled, and never keeps a chosen look'
 });
 
 test('P1.1: the drawer of a dropped card offers the way back, not only Close', async () => {
-  // The defect the view exposed: a dropped card's state is not in `BOARD_STATES`, so "the next lane"
-  // was null and the drawer rendered no primary move at all. A view that shows a card you cannot move
-  // is a view that shows a dead end.
+  // The defect the Dropped view once exposed, and the one this pass must not re-open: a dropped
+  // card's state is not in the board's own order, so "the next lane" is null and the drawer would
+  // otherwise render no primary move at all. A board that shows a card you cannot move is a dead end.
   const view = await mountBoard(loadBundle());
-  await view.click('[data-action="dropped"]');
-  await flush();
   await view.click('[data-card="T-006"]');
   await flush();
   const drawer = view.find('[data-drawer="T-006"]');
@@ -1031,9 +998,13 @@ test('P3.8: pressed and open share one treatment, and the open state carries a s
   assert.match(styles, /\.kb-more\[aria-expanded="true"\] \.kb-more-caret \{ transform: rotate\(90deg\); \}/);
 
   const view = await mountBoard(loadBundle(), { ...fixture(), views: SEEDED_VIEWS });
-  // Both kinds are on screen, and both say their state in an attribute rather than in a colour.
-  const toggle = view.find('[data-action="all"]');
-  assert.equal(toggle?.getAttribute('aria-pressed'), 'true');
+  // Both kinds are on screen, and both say their state in an attribute rather than in a colour. The
+  // pressed case is a checklist row now: the view row's `All` toggle was the panel's other
+  // `aria-pressed` control, and it is gone with the row.
+  await view.click('[data-card="T-001"]');
+  await flush();
+  const toggle = view.find('[data-drawer="T-001"] .kb-check');
+  assert.equal(toggle?.getAttribute('aria-pressed'), 'true', 'a ticked checklist row is pressed');
   assert.equal(toggle?.getAttribute('aria-expanded'), null, 'a toggle presses');
   const disclosure = view.find('[data-action="more-host"]');
   assert.equal(disclosure?.getAttribute('aria-expanded'), 'false');
@@ -1143,21 +1114,6 @@ test('P4.13: the motion budget is stated in the sheet and cancelled under reduce
 
 // ------------------------------------------------------------------ model helpers
 
-test('sameFilter ignores the order of a filter array, and nothing else', () => {
-  // The arrays a filter carries are sets. `['done','ready']` and `['ready','done']` are the same
-  // question, and comparing them verbatim is what left a saved view's button unpressed.
-  assert.equal(sameFilter({ state: ['done', 'ready'] }, { state: ['ready', 'done'] }), true);
-  assert.equal(sameFilter({ priority: ['p3-low', 'p0-critical'] }, { priority: ['p0-critical', 'p3-low'] }), true);
-  assert.equal(sameFilter({ state: ['done', 'ready'], priority: ['p1-high', 'p2-normal'] }, { priority: ['p2-normal', 'p1-high'], state: ['ready', 'done'] }), true);
-  // Order-insensitivity must not collapse genuinely different filters.
-  assert.equal(sameFilter({ state: ['done', 'ready'] }, { state: ['done'] }), false, 'a different set is different');
-  assert.equal(sameFilter({ state: ['done'] }, { state: ['done', 'done'] }), false, 'a multiset is not a set');
-  assert.equal(sameFilter({ state: ['done', 'ready'] }, { state: ['done', 'ready'], blocked: true }), false);
-  assert.equal(sameFilter({ search: 'x' }, { search: 'y' }), false);
-  assert.equal(sameFilter({ sprintId: null }, { sprintId: 's-1' }), false, 'null is a question, not an absence');
-  assert.equal(sameFilter({}, { blocked: undefined }), true, 'an undefined field is no field');
-});
-
 test('a forced move to the same state still needs its reason, as the host requires', () => {
   // `policy.checkMove` validates the exception's reason *before* it returns pass on a same-state move,
   // and the local pre-check now does the same. It used to wave the forced same-state move through,
@@ -1170,27 +1126,6 @@ test('a forced move to the same state still needs its reason, as the host requir
   assert.deepEqual(checkMoveLocally({ payload, task, toState: 'in-progress' }), { ok: true }, 'same state is a no-op');
   const forced = checkMoveLocally({ payload, task, toState: 'in-progress', force: true });
   assert.equal(forced.ok, false, 'but an exception still owes a written reason');
-});
-
-test('a saved view stays pressed when the same states are chosen in another order', async () => {
-  // Two views asking the same question with their arrays in a different order. `sameFilter`
-  // canonicalises, so choosing one reads both as pressed; before it sorted the arrays, neither
-  // matched and the toolbar highlighted nothing. (The chip row that used to build the other order
-  // by hand is gone, so the two views now stand in for it.)
-  const view = await mountBoard(loadBundle(), {
-    ...fixture(),
-    views: [
-      { id: 'v-rev', name: 'Reverse', description: 'done and ready, listed the other way', filter: { state: ['done', 'ready'] } },
-      { id: 'v-fwd', name: 'Forward', description: 'ready and done, listed the other way round', filter: { state: ['ready', 'done'] } },
-    ],
-  });
-
-  await view.click('nav[aria-label="Views"] button[title="done and ready, listed the other way"]');
-  await flush();
-
-  const pressed = view.findAll('nav[aria-label="Views"] .kb-btn[aria-pressed="true"]').map((node) => node.textContent);
-  assert.deepEqual(pressed, ['Reverse', 'Forward'], 'the same set of states, whatever order it was written in');
-  view.unmount();
 });
 
 test('the stylesheet is injected once under its id, and removed with the panel', async () => {
@@ -1984,10 +1919,14 @@ test('the pass-2 stylesheet rules are authored, and the states they style are re
   await view.dragStart('[data-card="T-002"]');
   await flush();
   assert.equal(view.find('[data-lane="review"]')?.className.includes('kb-lane-awake'), true);
-  assert.equal(view.has('.kb-btn[aria-pressed="true"]'), true);
-  await view.click('[data-card="T-003"]');
+  // The pressed state is a checked checklist row, and it lives in the drawer: the view row's `All`
+  // toggle was the board's other `aria-pressed` control and it is gone with the row. T-001's DoR is
+  // pre-ticked by the fixture, so its ticked row is the state to read.
+  await view.click('[data-card="T-001"]');
   await flush();
   assert.equal(view.has('.kb-drawer'), true);
+  assert.equal(view.find('.kb-drawer .kb-btn[aria-pressed="true"]') !== null, true, 'a ticked row is pressed');
+  assert.equal(view.has('.kb-btn[aria-pressed="true"]'), true);
   view.unmount();
 });
 
@@ -2066,41 +2005,39 @@ test('the dark-block detector fails on the pre-fix, comment-split selector list'
   assert.equal(darkScopedRules(fixed).length, 1);
 });
 
-// ------------------------------------------------------------------ the second fix pass (fresh critique)
+// ------------------------------------------------------------------ the third pass: the view row removed
 
-test('F18: one select in the view row narrows the board to a single state', async () => {
-  // The distill removed the state chip row on the user's verdict, but it also removed the only path
-  // the human had to a *single* state: "only Done" became an agent's `kanban_list({ state: […] })`
-  // and nobody else's. One `select.kb-input` restores the capability without a second surface.
+test('F18-overridden: the toolbar is a search box and a create row, and nothing narrows by state', async () => {
+  // The removed select *was* the fresh critique's item 18 — "the human lost single-state narrowing" —
+  // and the user overrode it deliberately: *"Remove it, do not group by that, I think it's not common,
+  // just view all."* So the assertion is that the panel offers no single-state control at all, and
+  // that narrowing by state now belongs where the critique's own comparison put it: the agent's
+  // `kanban_list({ state: … })` and `bin/kanban.mjs --state`, both untouched.
   const view = await mountBoard(loadBundle());
-  assert.equal(view.findAll('[data-state]').length, 0, 'the chip row did not come back');
-  assert.equal(view.findAll('select.kb-input').length, 1, 'the view row gained exactly one select');
-  assert.equal(view.has('.kb-bar [data-select="view-state"]'), true);
+  assert.equal(view.findAll('[data-state]').length, 0, 'the chip row did not come back either');
+  assert.equal(view.findAll('select.kb-input').length, 0, 'the view row select is removed, not deprecated');
+  assert.equal(view.find('.kb-bar [data-select="view-state"]'), null);
+  assert.equal(view.findAll('.kb-bar [data-select]').length, 0, 'the toolbar has no picker left of any kind');
+
+  // What the toolbar *does* still carry: the search, the title field and `Add`. Nothing else.
+  assert.equal(view.find('.kb-bar input[type="search"]') !== null, true, 'the search survives');
+  assert.equal(view.find('.kb-bar [data-action="create"]') !== null, true, 'and so does creation');
   assert.deepEqual(
-    view.findAll('[data-select="view-state"] option').map((node) => node.getAttribute('value')),
-    ['', 'backlog', 'ready', 'in-progress', 'review', 'done', 'dropped'],
-    'every state is offered, plus the way back out'
+    view.findAll('.kb-bar [data-action]').map((node) => node.getAttribute('data-action')),
+    ['create'],
+    'no view or Dismiss action remains in the row'
   );
-  assert.equal(view.find('[data-select="view-state"]')?.getAttribute('aria-label'), 'Narrow to one state');
-
-  await view.type('[data-select="view-state"]', 'done');
-  await flush();
-  assert.equal(view.has('[data-card="T-005"]'), true, 'the done card is drawn');
-  assert.equal(view.has('[data-card="T-003"]'), false, 'and the cards in every other state are not');
-  assert.equal(view.find('[data-action="all"]')?.getAttribute('aria-pressed'), 'false', 'the narrowing is a filter');
-  assert.match(view.find('.kb-head')?.textContent ?? '', /showing 1 of 6 cards/);
-
-  // The empty option is the select's own way back out, and it is the same board as `All`.
-  await view.type('[data-select="view-state"]', '');
-  await flush();
-  assert.equal(view.has('[data-card="T-003"]'), true);
-  assert.equal(view.find('[data-action="all"]')?.getAttribute('aria-pressed'), 'true');
+  // The two controls the row used to hold are not reachable anywhere else in the panel either.
+  assert.equal(view.findAll('[aria-label="Views"]').length, 0);
+  assert.equal(view.findAll('[aria-label="Narrow to one state"]').length, 0);
   view.unmount();
 });
 
 test('F19: a successful drop says which card left and where it went', async () => {
   // Dropping is the one move that takes a card off the board, and the board used to say nothing: the
-  // only feedback was `showing X of Y` ticking down, and the way back is a view nobody would guess.
+  // only feedback was `showing X of Y` ticking down. A successful drop acknowledges the lane it went
+  // to, which is on screen now — the board draws every state — so the sentence is a pointer, not the
+  // only way to find the card.
   const view = await mountBoard(loadBundle());
   await view.click('[data-card="T-002"]');
   await flush();
@@ -2240,10 +2177,11 @@ test('F26: the live region is visually hidden and does not keep stale text', asy
   assert.equal(announcer.textContent, '', 'and it starts empty rather than carrying an old sentence');
   assert.equal(view.find('.kb-dim[role="status"]'), null, 'the visible copy is gone');
 
-  // A message arrives, then clears: a stray "already at the edge" line does not sit in the DOM.
+  // A message arrives, then clears: a stray "already at the end of the board" line does not sit in
+  // the DOM once the move it described has been answered.
   await view.key('[data-card="T-001"]', 'ArrowLeft', { altKey: true });
   await flush();
-  assert.match(view.find('.kb-vh')?.textContent ?? '', /already at the edge/);
+  assert.match(view.find('.kb-vh')?.textContent ?? '', /already at the end of the board/);
   await new Promise((resolve) => setTimeout(resolve, 5200));
   await flush();
   assert.equal(view.find('.kb-vh')?.textContent, '', 'the last message does not persist');

@@ -72,9 +72,11 @@ export function keyboardTarget(from: State, direction: 'left' | 'right'): State 
  * Kept because it is the code that decides the affordance `Lane` draws, not a test-only stub: the
  * lane lights up only for a drop this allows. Today every lane the board draws accepts every drag —
  * the gates decide, not the geometry — so the visible behaviour is "every lane a card is over is
- * lit", which is the pinned statement in `test/board.test.ts`. A state outside `BOARD_STATES` (the
- * dropped lane) is the one thing that is not a board target; a card already there is a no-op, not a
- * refusal, which is why `from === to` passes first.
+ * lit", which is the pinned statement in `test/board.test.ts`. Since the board draws every state,
+ * `dropped` is one of those lanes and a drag onto it is the pointer's Drop — the gates still ask for
+ * the written reason the drawer's Drop control asks for, because `policy.checkMove` requires one on
+ * the host side. A card already there is a no-op, not a refusal, which is why `from === to` passes
+ * first.
  */
 export function isDropAllowed(from: State, to: State): boolean {
   if (from === to) return true;

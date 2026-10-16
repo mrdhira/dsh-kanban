@@ -8,7 +8,7 @@ engine.
 
 | surface | who uses it | what it does |
 |---|---|---|
-| **Kanban panel** (`sidebar.panellist` → `main`) | the human | lanes, drag-and-drop with a keyboard path, the card drawer with both checklists, views, templates, the flow metrics |
+| **Kanban panel** (`sidebar.panellist` → `main`) | the human | every state as a lane (`dropped` last), drag-and-drop with a keyboard path, a search box, the card drawer with both checklists, templates, the flow metrics |
 | **`kanban_*` tools** (9) and the `kanban` skill | agents | list, read, create, update/fill, move, drop, sprint, board, metrics |
 | **`bin/kanban.mjs`** | the human, scripts, checks | the same verbs from a shell, with distinct exit codes |
 

@@ -48,15 +48,28 @@ export interface BoardPayload {
 }
 
 /**
- * The columns the board draws by default: everything except `dropped`, which is a view, not a lane.
+ * The lanes the board draws: **every state, in store order, `dropped` last.**
  *
- * The default board stays five lanes on purpose — a sixth lane is the surface the distill pass took
- * away. `dropped` is reached through its own view, which narrows the board to that one lane (see
- * `filterStates`), so a dropped card is reachable and the default board is unchanged.
+ * The brief is "just view all", taken literally. There is no view row and no state filter in the
+ * panel, so nothing ever removes a lane: the board is one board, and the `dropped` lane at the end
+ * is what keeps a dropped card reachable from the panel rather than only from the CLI. It costs
+ * little when it is empty because an empty lane narrows to a content-width dashed slot
+ * (`.kb-lane-empty`, `flex: 0 0 auto`) instead of holding a 236px column.
+ *
+ * This is the same list `STATES` carries. It is named because the board order is board vocabulary —
+ * `dnd.ts` reads it for `Alt+←/→` and for the one state a card cannot be moved onto — and `columnsOf`
+ * is the renderer that must agree with it.
  */
-export const BOARD_STATES: readonly State[] = STATES.filter((state) => state !== 'dropped');
+export const BOARD_STATES: readonly State[] = STATES;
 
-/** A filter the human can apply from the toolbar. */
+/**
+ * Every question a filter can ask about the cards.
+ *
+ * The panel itself now asks one of them — `search`, the text box — because the view row that used to
+ * set `state`, `priority` and the rest was removed on the user's verdict (*"just view all"*). The rest
+ * of the shape stays because the store's `setFilter` takes it and the board's saved views still carry
+ * it at the data level: `board.db`, the tools, the CLI's `--state` and the API are untouched.
+ */
 export interface ViewFilter {
   readonly state?: readonly State[];
   readonly assignee?: string;
@@ -73,19 +86,10 @@ export interface ViewFilter {
  * The "nothing is filtered" value.
  *
  * Frozen because it is shared: a caller that spread it into a new filter and then wrote a field
- * would otherwise edit this constant, and every later board would open with the last selection.
+ * would otherwise edit this constant, and every later board would open with the last selection. It
+ * is the board's own default (`columnsOf`), and it is the filter a search box clears back to.
  */
 export const EMPTY_FILTER: ViewFilter = Object.freeze({});
-
-/**
- * The `Dropped` view's filter.
- *
- * A dropped card has no lane on the default board, and the drawer's Drop control is the only way to
- * reach that state — so without a view that names it, a dropped card was unreachable from the panel
- * and the only way back was the CLI. This is that view: frozen for the same reason as `EMPTY_FILTER`,
- * because both are shared constants a caller could otherwise edit in place.
- */
-export const DROPPED_FILTER: ViewFilter = Object.freeze({ state: ['dropped'] as readonly State[] });
 
 /** One drawn column. */
 export interface Column {
@@ -110,7 +114,7 @@ export function limitFor(state: State, dow: DefinitionOfWorkflow): number | unde
   return undefined;
 }
 
-/** Filter the cards the toolbar is currently asking for. */
+/** Filter the cards a text search is currently asking for. */
 export function filterCards(tasks: readonly Task[], filter: ViewFilter): Task[] {
   const search = filter.search?.trim().toLowerCase();
   return tasks.filter((task) => {
@@ -128,10 +132,16 @@ export function filterCards(tasks: readonly Task[], filter: ViewFilter): Task[] 
   });
 }
 
-/** The columns to draw, in board order, each already sorted by the board's rule. */
+/**
+ * The columns to draw, in board order, each already sorted by the board's rule.
+ *
+ * **Every state, always.** The filter narrows *cards*, not lanes: the one filter the panel can set is
+ * the search box, and a search that hides a card leaves its lane standing. The dropped lane is last
+ * because it is the end of the workflow, and it is drawn whether or not it holds anything.
+ */
 export function columnsOf(payload: BoardPayload, filter: ViewFilter = EMPTY_FILTER): Column[] {
   const tasks = filterCards(payload.tasks, filter);
-  return filterStates(filter).map((state) => {
+  return STATES.map((state) => {
     const cards = tasks.filter((task) => task.state === state).sort(compareInColumn);
     const limit = limitFor(state, payload.dow);
     return {
@@ -142,24 +152,6 @@ export function columnsOf(payload: BoardPayload, filter: ViewFilter = EMPTY_FILT
       over: limit !== undefined && cards.length > limit,
     };
   });
-}
-
-/**
- * The states a filter asks the board to draw.
- *
- * The default is the five board lanes. The one exception is a filter *named* to `dropped`: a card can
- * be dropped from the drawer, and before this the only way back to it was the CLI — the card left the
- * board and nothing on the panel could show it again. So a filter that names `dropped` draws that lane
- * instead of the board's five, which is what makes the `Dropped` view a view and not a sixth lane.
- *
- * `All` is untouched by this: it is the empty filter, and the empty filter is still the five lanes.
- * Only an explicit `state: ['dropped']` — the panel's own Dropped view, or a saved view that names it
- * — changes what is drawn, so no existing view or escape hatch changes meaning.
- */
-export function filterStates(filter: ViewFilter): readonly State[] {
-  const named = filter.state;
-  if (named !== undefined && named.length === 1 && named[0] === 'dropped') return ['dropped'];
-  return BOARD_STATES;
 }
 
 /** WIP as the guide defines it: started, not finished — blocked cards included. */
@@ -350,41 +342,6 @@ export function applyLocalMove(payload: BoardPayload, taskId: string, toState: S
   for (const state of STATES) counts[state] = 0;
   for (const task of tasks) counts[task.state] = (counts[task.state] ?? 0) + 1;
   return { ...payload, tasks, counts };
-}
-
-/**
- * Is a filter asking for anything at all?
- *
- * The view buttons use this to tell "no view is active" from "a view is active": when nothing is
- * filtered, the panel's own `All` control is the pressed one. The state quick chips and the two
- * helpers that fed them (`activeStates`, `filterableStates`) went with the chip row in the distill
- * pass — the views are the panel's state filtering now.
- */
-export function hasFilter(filter: ViewFilter): boolean {
-  return Object.values(filter).some((value) => value !== undefined);
-}
-
-/**
- * Do two filters ask for the same board?
- *
- * The toolbar needs this to say which view is current: a saved view stores the filter object and
- * the store holds another copy of it, so identity comparison would mark every view inactive the
- * moment it was clicked. Canonicalised as sorted `key=value` pairs.
- *
- * An array value is **sorted before it is serialised**, because the same question can be asked in a
- * different order: a view saved as `['done','ready']` and the chips that append `['ready','done']`
- * are the same filter, and comparing the arrays verbatim left the saved view's button unpressed and
- * the toolbar highlighting nothing. The two arrays a filter can carry (`state`, `priority`) are
- * sets, so their order is not part of the question.
- */
-export function sameFilter(a: ViewFilter, b: ViewFilter): boolean {
-  const canonical = (filter: ViewFilter): string =>
-    Object.entries(filter)
-      .filter(([, value]) => value !== undefined)
-      .map(([key, value]) => `${key}=${JSON.stringify(Array.isArray(value) ? [...value].sort() : value)}`)
-      .sort()
-      .join('&');
-  return canonical(a) === canonical(b);
 }
 
 /** `p * 100`, without inventing a decimal place: `0.855` stays `85.5%`, not `86%`. */

@@ -309,7 +309,7 @@ function resolve(token: string, tokens: Map<string, string>): string | null {
 
 // ------------------------------------------------------------------ render + capture
 
-/** The board `test/client.dom.test.ts` renders: one refined backlog card, one ready, two in progress, one done. */
+/** The board `test/client.dom.test.ts` renders: one refined backlog card, one ready, two in progress, one done, one dropped. */
 function fixture(): Record<string, unknown> {
   const fullDor = Object.fromEntries(
     ['outcome', 'acceptance', 'write-scope', 'estimate'].map((id) => [id, { at: '2026-10-01T00:00:00.000Z', by: 'human:dhira' }])
@@ -318,9 +318,9 @@ function fixture(): Record<string, unknown> {
   const tasks = (payload.tasks as Record<string, unknown>[]).map((task) =>
     task.id === 'T-001' ? { ...task, dor: fullDor } : task
   );
-  // A dropped card, so the `Dropped` view has something to show. The board itself still draws five
-  // lanes: this card is in the store and nowhere on the default board, which is the whole reason the
-  // view exists.
+  // A dropped card. Since the view row was removed the board draws every state, so this card sits in
+  // the sixth lane — last, and off the right edge at the panel's own width, which is what the
+  // scrolled capture below exists to show.
   const dropped = { ...(tasks[0] as Record<string, unknown>), id: 'T-006', title: 'card T-006', state: 'dropped', droppedReason: 'superseded', position: 0 };
   return { ...payload, tasks: [...tasks, dropped], total: tasks.length + 1 };
 }
@@ -328,21 +328,19 @@ function fixture(): Record<string, unknown> {
 /**
  * Mount the real panel and return its rendered markup. `respondWithBoard` + `flush` as the DOM test does.
  *
- * `filter` is applied to the store before the first paint, so one run can capture the default board
- * and the `Dropped` view without a second headless Chrome pass. `window.__DSH_TRANSPORT__` is what
- * the bundle reads for the host origin; leaving it unset is fine because the fake `fetch` answers.
+ * No filter is applied: the board draws every state by default now, so one mount is the whole board.
+ * `window.__DSH_TRANSPORT__` is what the bundle reads for the host origin; leaving it unset is fine
+ * because the fake `fetch` answers.
  */
-async function renderMarkup(filter?: Record<string, unknown>): Promise<string> {
+async function renderMarkup(): Promise<string> {
   const loaded = loadBundle();
   respondWithBoard(fixture());
-  const store = freshStore(loaded) as { setFilter(next: Record<string, unknown>): void };
-  if (filter !== undefined) store.setFilter(filter);
-  const view = mount(loaded, loaded.slot('main'), { store });
+  const view = mount(loaded, loaded.slot('main'), { store: freshStore(loaded) });
   await flush();
   const markup = view.container.innerHTML;
   if (markup.trim().length === 0) throw new Error('the panel rendered nothing');
-  if (filter !== undefined && !markup.includes('data-lane="dropped"')) {
-    throw new Error('the Dropped view rendered without its lane — the filter did not reach the board');
+  for (const lane of ['backlog', 'ready', 'in-progress', 'review', 'done', 'dropped']) {
+    if (!markup.includes(`data-lane="${lane}"`)) throw new Error(`the board rendered without its ${lane} lane`);
   }
   view.unmount();
   return markup;
@@ -377,6 +375,14 @@ function htmlDocument(args: {
   markup: string;
   /** Add the script that reports computed colours, for the cascade probe (not used for a screenshot). */
   probe?: boolean;
+  /**
+   * Scroll the lane row to its right-hand end before the shot.
+   *
+   * The board is six 236px lanes in an `overflow-x: auto` row, so at the panel's own width the
+   * `dropped` lane starts off-screen — correct behaviour, and invisible in a screenshot. This is how
+   * the pass's visual review sees the sixth lane without pretending the panel is wider than it is.
+   */
+  scrollToEnd?: boolean;
 }): { html: string; unresolved: string[] } {
   const declarations: string[] = [];
   const unresolved: string[] = [];
@@ -411,6 +417,16 @@ window.addEventListener('DOMContentLoaded', function () {
 </script>`
     : '';
 
+  const scrollScript = args.scrollToEnd
+    ? `
+<script>
+window.addEventListener('DOMContentLoaded', function () {
+  var lanes = document.querySelector('.kb-lanes');
+  if (lanes !== null) lanes.scrollLeft = lanes.scrollWidth;
+});
+</script>`
+    : '';
+
   // `data-dsh-theme` stays on `<html>` as a label for the file; no rule keys on it any more.
   const html = `<!doctype html>
 <html data-dsh-theme="${args.theme}">
@@ -429,7 +445,7 @@ ${args.styles}
 </style>
 </head>
 <body${bodyMarker}>
-<div id="root">${args.markup}</div>${probeScript}
+<div id="root">${args.markup}</div>${probeScript}${scrollScript}
 </body>
 </html>
 `;
@@ -542,12 +558,7 @@ async function main(): Promise<void> {
   console.log(`[styles] STYLES read from ${BUNDLE_PATH} (${String(styles.length)} chars); ${String(referenced.length)} --dsw-* tokens referenced`);
 
   const markup = await renderMarkup();
-  console.log(`[render] panel markup: ${String(markup.length)} chars, ${String((markup.match(/data-card=/g) ?? []).length)} cards`);
-  // The one view this pass added, rendered for real: the dropped lane, its card, and the toolbar
-  // button that reaches it. Captured alongside the board so a visual review can see the new surface
-  // in both themes rather than take the DOM suite's word for it.
-  const droppedMarkup = await renderMarkup({ state: ['dropped'] });
-  console.log(`[render] dropped-view markup: ${String(droppedMarkup.length)} chars`);
+  console.log(`[render] panel markup: ${String(markup.length)} chars, ${String((markup.match(/data-card=/g) ?? []).length)} cards, ${String((markup.match(/data-lane=/g) ?? []).length)} lanes`);
 
   const written: string[] = [];
   const unresolvedReport: string[] = [];
@@ -593,17 +604,21 @@ async function main(): Promise<void> {
       written.push(`capture-${theme}-${String(width)}.png  ${String(png.bytes)} bytes  ${String(png.width)}x${String(png.height)}  ${out}`);
     }
 
-    // One extra shot per theme at the wider size: the `Dropped` view. The narrow size keeps the two
-    // board captures it always had, so the pass stays one headless Chrome per file rather than four.
-    const droppedDoc = htmlDocument({ theme, tokens: themeTokens, styles, markup: droppedMarkup });
+    // One extra shot per theme: the same board scrolled to its right-hand end at the narrow width,
+    // so the sixth lane — `dropped`, and the card in it — is actually on screen. At 1600px all six
+    // lanes fit and the shot would duplicate `capture-<theme>-1600.png`; at 1000px the dropped lane is
+    // off the right edge, which is correct behaviour and invisible, and this is how the visual review
+    // sees it. The first two captures keep their sizes, so the pass stays one headless Chrome per
+    // file rather than five.
+    const droppedDoc = htmlDocument({ theme, tokens: themeTokens, styles, markup, scrollToEnd: true });
     for (const token of droppedDoc.unresolved) unresolvedReport.push(`dropped ${theme}: ${token}`);
     const droppedPath = join(TEMP_DIR, `panel-${theme}-dropped.html`);
     writeFileSync(droppedPath, droppedDoc.html, 'utf8');
-    const droppedOut = join(OUT_DIR, `capture-${theme}-dropped-1600.png`);
-    screenshot(droppedPath, droppedOut, 1600, 900);
+    const droppedOut = join(OUT_DIR, `capture-${theme}-dropped-1000.png`);
+    screenshot(droppedPath, droppedOut, 1000, 900);
     const droppedPng = pngSize(droppedOut);
     if (droppedPng.bytes < 1500) throw new Error(`${droppedOut} is only ${String(droppedPng.bytes)} bytes — the capture looks blank`);
-    written.push(`capture-${theme}-dropped-1600.png  ${String(droppedPng.bytes)} bytes  ${String(droppedPng.width)}x${String(droppedPng.height)}  ${droppedOut}`);
+    written.push(`capture-${theme}-dropped-1000.png  ${String(droppedPng.bytes)} bytes  ${String(droppedPng.width)}x${String(droppedPng.height)}  scrolled to the dropped lane  ${droppedOut}`);
   }
 
   console.log(`\n[html] ${TEMP_DIR}/panel-<theme>.html (and panel-<theme>-probe.html for the [scoped] check)`);

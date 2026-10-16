@@ -316,10 +316,11 @@ export function createBoardStore(transport: BoardTransport, options: BoardStoreO
         { id, toState: 'dropped', reason, ...(task === undefined ? {} : { expectedRev: task.rev }) },
         payload === null ? undefined : () => applyLocalMove(payload, id, 'dropped', task?.position ?? 0, now().toISOString())
       );
-      // Dropping is the one move that takes a card off the board, and the board said nothing: the
-      // only feedback was `showing X of Y` ticking down, and the way back lives in a view nobody
-      // would guess. A successful drop acknowledges where the card went, in the strip that already
-      // carries every other thing the panel has to say. A refusal keeps its own notice.
+      // Dropping is the one move that takes a card out of play, and the board said nothing: the only
+      // feedback was `showing X of Y` ticking down, and the card moved to a lane nobody had a control
+      // for. A successful drop now acknowledges where the card went, in the strip that already
+      // carries every other thing the panel has to say — and since the board draws every state, that
+      // lane is on screen without anyone asking for it. A refusal keeps its own notice.
       if (landed) {
         noticeSeq += 1;
         set({

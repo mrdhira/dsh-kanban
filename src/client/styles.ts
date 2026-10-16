@@ -120,7 +120,7 @@ export const STYLES = `
    which is the point: a warning that could not be seen because a write was in flight is not one. */
 .kb-lanes-busy, .kb-lanes-loading { color: var(--dsw-alias-label-secondary, var(--kb-label-secondary)); }
 /* The loading tell. A lane's own skeleton line is drawn for each lane the board is about to fill, so a
-   pending board reads as pending at every width instead of as five empty lanes that might be the
+   pending board reads as pending at every width instead of as six empty lanes that might be the
    answer. It carries no text; the header's 'connecting...' is the announced half. */
 .kb-skeleton { height: 34px; border-radius: var(--kb-radius-card, 8px); border: 1px dashed var(--dsw-alias-border-l1, var(--kb-border-l1)); }
 .kb-lane { flex: 0 0 var(--kb-lane-width, 236px); display: flex; flex-direction: column; gap: 7px; border: 1px solid var(--dsw-alias-border-l1, var(--kb-border-l1));

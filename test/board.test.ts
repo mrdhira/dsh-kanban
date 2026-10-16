@@ -108,11 +108,20 @@ const REFINED = Object.fromEntries(['outcome', 'acceptance', 'write-scope', 'est
 
 // ------------------------------------------------------------------ the columns
 
-test('the board draws every lane except dropped', () => {
+test('the board draws every lane, dropped last', () => {
+  // No filter removes a lane: the panel has no view row and no state picker, so the drawn columns
+  // are the state list itself, in store order, with the one state a card leaves the board for at the
+  // end. That lane is what keeps a dropped card reachable.
   const columns = columnsOf(payload([]));
   assert.deepEqual(
     columns.map((column) => column.state),
-    ['backlog', 'ready', 'in-progress', 'review', 'done']
+    ['backlog', 'ready', 'in-progress', 'review', 'done', 'dropped']
+  );
+  const named = columnsOf(payload([]), { state: ['dropped'] });
+  assert.deepEqual(
+    named.map((column) => column.state),
+    ['backlog', 'ready', 'in-progress', 'review', 'done', 'dropped'],
+    'a filter narrows cards, never lanes'
   );
 });
 
@@ -371,8 +380,10 @@ test('with nothing being dragged, a drop does nothing', () => {
 test('the keyboard moves one column along the board order and stops at the edges', () => {
   assert.equal(keyboardTarget('backlog', 'right'), 'ready');
   assert.equal(keyboardTarget('in-progress', 'left'), 'ready');
+  assert.equal(keyboardTarget('done', 'right'), 'dropped', 'done is no longer the last lane');
+  assert.equal(keyboardTarget('dropped', 'right'), null, 'dropped is the end of the board order');
+  assert.equal(keyboardTarget('dropped', 'left'), 'done', 'and Alt+← walks back out of it');
   assert.equal(keyboardTarget('backlog', 'left'), null);
-  assert.equal(keyboardTarget('done', 'right'), null);
 });
 
 test('every lane is a legal drop target, because the gate explains the refusal', () => {
