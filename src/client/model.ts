@@ -196,23 +196,12 @@ export function priorityBadge(priority: Priority): string {
 }
 
 /**
- * `P1 · high` — the badge plus the word.
- *
- * The word is not decoration: the amber `P1` fails AA on the light theme's white (≈2.15:1), so the
- * meaning has to survive without the colour. `priorityBadge` stays the short form for the
- * generated projection, which is text on a terminal rather than a 12px badge.
- */
-export function priorityText(priority: Priority): string {
-  const [code = priority, ...rest] = PRIORITY_LABEL[priority].split(' ');
-  return rest.length === 0 ? code : `${code} · ${rest.join(' ')}`;
-}
-
-/**
  * The code alone (`P0`), for the card's top row.
  *
  * That row carries the id, the priority and the age inside a 236px lane. Spelling the priority out
  * there wrapped the row and split the id mid-token; the word belongs in the chip row, which wraps
- * gracefully. The drawer and the CLI keep the full `priorityText`.
+ * gracefully (`priorityWord`), while the drawer prints the store's full `PRIORITY_LABEL`. The
+ * `priorityText` helper this replaced was never called by anything and is gone.
  */
 export function priorityCode(priority: Priority): string {
   return PRIORITY_LABEL[priority].split(' ')[0] ?? priority;

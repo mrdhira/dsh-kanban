@@ -32,6 +32,7 @@ import {
 import { resolveOrigin } from '../lib/v1/client/api.js';
 import { createBoardStore } from '../lib/v1/client/store.js';
 import { DROPPED_FILTER, EMPTY_FILTER, checkMoveLocally, columnsOf, filterStates, sameFilter } from '../lib/v1/client/model.js';
+import { PRIORITIES } from '../lib/v1/store/index.js';
 
 const FULL_DOR = Object.fromEntries(
   ['outcome', 'acceptance', 'write-scope', 'estimate'].map((id) => [id, { at: '2026-10-01T00:00:00.000Z', by: 'human:dhira' }])
@@ -39,15 +40,6 @@ const FULL_DOR = Object.fromEntries(
 
 /** A filter the store reports as the current view: a ready card and everything past the gate. */
 const READY_VIEW = { state: ['ready', 'in-progress', 'review', 'done'] };
-
-/**
- * The panel's own `Dropped` view, as the button sets it.
- *
- * A dropped card has no lane on the default board — deliberately, and the fifth lane stays gone — so
- * this filter is the only way the panel can show one. The brief for this pass allows exactly one new
- * affordance, and it is this view.
- */
-const DROPPED_VIEW = { state: ['dropped'] };
 
 /**
  * The two views every new board is seeded with, as the host sends them.
@@ -145,6 +137,10 @@ test('a lane past its limit says so', async () => {
   const view = await mountBoard(loadBundle(), overLimit);
   const lane = view.find('[data-lane="review"]');
   assert.equal(lane?.className.includes('kb-lane-over-limit'), true);
+  // The word is not an ordinary chip: it carries the warning class, so the over-limit lane is one
+  // signal told twice (the red count and the coloured, weighted chip) instead of a coloured number
+  // beside a chip that looked like every other chip.
+  assert.equal(lane?.querySelector('.kb-chip-warn')?.textContent, 'over limit');
   view.unmount();
 });
 
@@ -163,6 +159,23 @@ test('the header names the revision it is showing, and the host line waits behin
   view.unmount();
 });
 
+test('the header count matches what is drawn, not what the host holds', async () => {
+  // The fixture holds six cards and the board draws five: the sixth is dropped, and the board has no
+  // lane for it. The header used to print "6 cards" over five drawn cards. A count that disagrees
+  // with the screen is the kind of small lie this board exists to avoid, so the unfiltered header
+  // states both numbers whenever the board cannot draw everything it holds.
+  const view = await mountBoard(loadBundle());
+  assert.equal(view.findAll('[data-card]').length, 5, 'five cards are drawn');
+  assert.match(view.text(), /rev 7 · showing 5 of 6 cards/, 'and the header accounts for the sixth');
+  assert.equal(view.text().includes('rev 7 · 6 cards'), false, 'never a total that disagrees with the screen');
+
+  // A board that draws every card it holds keeps the short form rather than a redundant "5 of 5".
+  const whole = await mountBoard(loadBundle(), boardPayload());
+  assert.match(whole.text(), /rev 7 · 5 cards/);
+  whole.unmount();
+  view.unmount();
+});
+
 test('two numbers lead the metrics and the history opens behind one control', async () => {
   const view = await mountBoard(loadBundle());
   const front = view.text();
@@ -171,16 +184,30 @@ test('two numbers lead the metrics and the history opens behind one control', as
   assert.equal(view.findAll('.kb-metric-lead').length, 2, 'exactly two items lead the scan');
   assert.equal(front.includes('Cycle'), false, 'the history is not competing with them');
   assert.equal(front.includes('Throughput'), false);
-  assert.equal(front.includes('p85'), false, 'the 85th percentile is not in the strip at all');
+  assert.equal(front.includes('p85'), false, 'the 85th percentile is not on the front line');
   assert.equal(view.find('[data-action="more-metrics"]')?.getAttribute('aria-expanded'), 'false');
 
   await view.click('[data-action="more-metrics"]');
   await flush();
   assert.equal(view.find('[data-action="more-metrics"]')?.getAttribute('aria-expanded'), 'true');
   const opened = view.text();
-  assert.match(opened, /Cycle median 3d/);
+  // The disclosure holds all three cycle readings, not the median alone: the payload has them, and
+  // the history behind the disclosure is exactly where a second and third reading belong.
+  assert.match(opened, /Cycle median 3d · p85 3d · mean 3d/);
   assert.match(opened, /Throughput 1\/7d · 1\/30d/);
   assert.match(opened, /SLE 85% ≤ 3d/);
+  view.unmount();
+});
+
+test('a metric the store cannot compute is an em dash, not a zero', async () => {
+  // `null` is "no finished card to measure", which is not the same claim as `0d`, and the disclosure
+  // prints the distinction rather than inventing a number the board does not have.
+  const payload = boardPayload();
+  const metrics = { ...(payload.metrics as Record<string, unknown>), cycle: { count: 0, medianDays: null, p85Days: null, meanDays: null, minDays: null, maxDays: null } };
+  const view = await mountBoard(loadBundle(), { ...fixture(), metrics });
+  await view.click('[data-action="more-metrics"]');
+  await flush();
+  assert.match(view.text(), /Cycle median —d · p85 —d · mean —d/);
   view.unmount();
 });
 
@@ -556,6 +583,22 @@ test('P1.1: All stays the escape from the Dropped view, and the dropped card can
   view.unmount();
 });
 
+test('P1.1: Alt+←/→ on a dropped card says it is dropped, not that it is at an edge', async () => {
+  // A dropped card is not at the edge of the board — it is not on the board at all, which is why the
+  // keyboard target is null. Telling a reader it is "already at the edge" of a board that refuses to
+  // draw it is a small lie, and the drawer's `→ Backlog` is the real answer.
+  const view = await mountBoard(loadBundle());
+  await view.click('[data-action="dropped"]');
+  await flush();
+  await view.focus('[data-card="T-006"]');
+  await view.key('[data-card="T-006"]', 'ArrowRight', { altKey: true });
+  await flush();
+  assert.match(view.text(), /T-006 is dropped/);
+  assert.equal(view.text().includes('edge of the board'), false, 'a dropped card is not at an edge');
+  assert.equal(lastMutation(), undefined, 'and the panel did not invent a move to send to the host');
+  view.unmount();
+});
+
 test('P1.1: only a filter that names dropped draws the dropped lane', () => {
   // The narrow rule, at the level where it is decided. `All` (the empty filter) keeps the board's five
   // lanes, a saved view that happens to include dropped still draws the board, and only an explicit
@@ -602,6 +645,33 @@ test('P1.2: a drawer opened from the keyboard claims its ring, a pointer-opened 
   clicked.unmount();
 });
 
+test('P1.2: a click on a second card does not inherit the first drawer’s keyboard claim', async () => {
+  // The leak: the click handler kept the claim whenever *a* drawer held focus, but a click on another
+  // card replaces that drawer with a new keyed one -- which then re-read the flag and painted a
+  // pointer-opened drawer with the keyboard ring. Enter-open T-002, then click T-003: T-003's drawer
+  // is a pointer path and must say so.
+  const view = await mountBoard(loadBundle());
+
+  await view.focus('[data-card="T-002"]');
+  await view.key('[data-card="T-002"]', 'Enter');
+  await flush();
+  assert.equal(view.find('[data-drawer="T-002"]')?.getAttribute('data-open'), 'keyboard');
+  // The keyboard claim is only interesting because that drawer really is holding focus: if the focus
+  // never landed there, the old guard would have cleared the flag for a different reason and this
+  // case would pass against the bug.
+  assert.equal((view.container.ownerDocument.activeElement as Element | null)?.className, 'kb-drawer');
+
+  await view.click('[data-card="T-003"]');
+  await flush();
+  assert.equal(view.has('[data-drawer="T-002"]'), false, 'the keyed drawer was replaced, not reused');
+  assert.equal(
+    view.find('[data-drawer="T-003"]')?.getAttribute('data-open'),
+    'pointer',
+    'a click is a pointer path, whatever the drawer it replaced was doing'
+  );
+  view.unmount();
+});
+
 // ------------------------------------------------------------------ P2.3 loading is a state
 
 /**
@@ -634,6 +704,28 @@ test('P2.3: a first load in flight is a state on the board, not only a sentence 
   assert.equal(lanes?.className.includes('kb-lanes-loading'), true);
   assert.equal(view.findAll('.kb-skeleton').length > 0, true, 'the lanes show a pending line, not a verdict');
   assert.equal(view.has('.kb-empty'), false, 'and not "nothing here", which would be a claim');
+  view.unmount();
+});
+
+test('P2.3: a pending lane prints no limit it cannot know', async () => {
+  // The Definition of Workflow arrives with the payload, so while the first read is in flight there is
+  // no honest limit to print. `pendingColumns` used to build its lanes from `DEFAULT_DOW`, which could
+  // contradict the board it was standing in for: a lane headed `0/2` over a board whose real WIP limit
+  // is 9. The lane's name and its `0` are enough until the payload says otherwise.
+  const loaded = loadBundle();
+  setFetch((() => neverAnsweringReply()) as never);
+  const view = mount(loaded, loaded.slot('main'), { store: freshStore(loaded) });
+  await flush();
+  assert.deepEqual(
+    view.findAll('[data-lane]').map((node) => node.getAttribute('data-lane')),
+    ['backlog', 'ready', 'in-progress', 'review', 'done'],
+    "the pending board draws the board's own five lanes"
+  );
+  assert.deepEqual(
+    view.findAll('.kb-lane-count').map((node) => node.textContent),
+    ['0', '0', '0', '0', '0'],
+    'and no lane prints a cap it has not been told'
+  );
   view.unmount();
 });
 
@@ -763,6 +855,32 @@ test('P2.5: a disabled control reads as disabled, and never keeps a chosen look'
   await view.type('input[aria-label="New card title"]', 'x');
   assert.equal(view.find('[data-action="create"]')?.hasAttribute('disabled'), false);
   view.unmount();
+
+  // The state the stylesheet rule above exists for, rendered rather than assumed: a ticked checklist
+  // row while its own mutation is in flight. The row is `aria-pressed="true"` (T-001's DoR is ticked)
+  // and the store's `busy` disables it, so the panel really does produce the pressed+disabled
+  // combination -- before this, no component did and the rule was dead while the claim about it stood.
+  const loaded = loadBundle();
+  respondWithBoard(fixture());
+  const store = freshStore(loaded) as {
+    tick(id: string, gate: 'dor' | 'dod', checkId: string, done: boolean): Promise<void>;
+  };
+  const ticking = mount(loaded, loaded.slot('main'), { store });
+  await flush();
+  await ticking.click('[data-card="T-001"]');
+  await flush();
+  const row = (): Element | null => ticking.find('[data-drawer="T-001"] .kb-check');
+  assert.equal(row()?.getAttribute('aria-pressed'), 'true', 'the ticked DoR row is the chosen control');
+  assert.equal(row()?.hasAttribute('disabled'), false, 'and it is live while nothing is in flight');
+  // `write` sets `busy` synchronously, so the row can be read while the host has not answered yet.
+  const inFlight = store.tick('T-001', 'dor', 'outcome', false);
+  ticking.rerender({ store });
+  assert.equal(row()?.getAttribute('aria-pressed'), 'true', 'the row keeps its chosen state');
+  assert.equal(row()?.hasAttribute('disabled'), true, 'while the tick cannot land');
+  await inFlight;
+  await flush();
+  assert.equal(row()?.hasAttribute('disabled'), false, 'and it is live again once the host has answered');
+  ticking.unmount();
 });
 
 test('P1.1: the drawer of a dropped card offers the way back, not only Close', async () => {
@@ -796,22 +914,27 @@ test('P3.6: one fallback alpha per role, declared once, and no rule invents a fi
   assert.equal((sheet.match(/--kb-bg-layer-2:/g) ?? []).length, 1);
   assert.equal((sheet.match(/--kb-label-secondary:/g) ?? []).length, 1);
 
-  // The drift itself, as a rule rather than as a diff: every direct fallback literal for the roles
-  // that had more than one alpha is the declared one. `var(--dsw-alias-border-l1, …)` sitting inside
-  // the nested `border-l2` chain is a different role's deliberate stronger step, not a second alpha
-  // for this one, so the text before the match decides it. Counting first keeps the failure message
+  // The drift itself, as a rule rather than as a diff: every rule that needs one of the three role
+  // literals now takes the declared property, so there is no direct `var(--dsw-alias-…, rgba(…))`
+  // fallback left to drift to a fifth alpha. `var(--dsw-alias-border-l1, …)` sitting inside the
+  // nested `border-l2` chain is a different role's deliberate stronger step, not a second alpha for
+  // this one, so the text before the match decides it. Counting first keeps the failure message
   // small — a deep-equal on a match array would print the whole stylesheet.
   const alphas = (token: string): string[] =>
     [...sheet.matchAll(new RegExp(`var\\(${token}, rgba\\(128,128,128,([0-9.]+)\\)\\)`, 'g'))]
       .filter((match) => !(sheet.slice(Math.max(0, (match.index ?? 0) - 32), match.index) + match[0]).includes('--dsw-alias-border-l2, var(--dsw-alias-border-l1'))
       .map((match) => match[1] as string);
-  const borderL1 = alphas('--dsw-alias-border-l1');
-  assert.equal(borderL1.length > 0, true, 'the role is used at all');
-  assert.equal(borderL1.length, borderL1.filter((alpha) => alpha === '0.35').length, `no rule re-states border-l1 at another alpha: ${borderL1.join(',')}`);
-  const layer2 = alphas('--dsw-alias-bg-layer-2');
-  assert.equal(layer2.length, layer2.filter((alpha) => alpha === '0.12').length);
-  const secondary = alphas('--dsw-alias-label-secondary');
-  assert.equal(secondary.length, secondary.filter((alpha) => alpha === '0.9').length);
+  assert.deepEqual(alphas('--dsw-alias-border-l1'), [], 'border-l1 takes --kb-border-l1, never its own literal');
+  assert.deepEqual(alphas('--dsw-alias-bg-layer-2'), []);
+  assert.deepEqual(alphas('--dsw-alias-label-secondary'), []);
+  // And the property form is the one the rules actually use, so the walk above is not vacuous.
+  for (const pair of [
+    'var(--dsw-alias-border-l1, var(--kb-border-l1))',
+    'var(--dsw-alias-bg-layer-2, var(--kb-bg-layer-2))',
+    'var(--dsw-alias-label-secondary, var(--kb-label-secondary))',
+  ]) {
+    assert.equal(sheet.includes(pair), true, `${pair} is used`);
+  }
   // The one deliberate exception: `border-l2` states its own stronger step inside the nested chain.
   assert.equal(sheet.includes('var(--dsw-alias-border-l2, var(--dsw-alias-border-l1, rgba(128,128,128,0.5)))'), true);
 });
@@ -848,16 +971,34 @@ test('P3.10: the disclosure toggle is at least as tall as a button', () => {
   assert.match(styles, /\.kb-more-caret \{ flex: 0 0 auto/);
 });
 
-test('P4.11: every class the templates emit has a rule, and it is rendered', async () => {
+test('P4.11: every kb- class the panel emits is authored in the sheet, and the families are rendered', async () => {
   const styles = readFileSync(new URL('../src/client/styles.ts', import.meta.url), 'utf8');
+  const source = readFileSync(new URL('../src/client/components.ts', import.meta.url), 'utf8');
   const sheet = styles.slice(styles.indexOf('export const STYLES'));
-  // The three template families, as the source actually builds them.
-  const priorityCodes = ['p0', 'p1', 'p2', 'p3', 'p4'];
-  const ageBands = ['fresh', 'ageing', 'stale'];
-  for (const code of priorityCodes) assert.match(sheet, new RegExp(`\\.kb-pri-${code}[ ,{]`), `kb-pri-${code} is authored`);
-  for (const band of ageBands) assert.match(sheet, new RegExp(`\\.kb-age-${band}[ ,{]`), `kb-age-${band} is authored`);
-  for (const kind of ['refusal', 'info', 'error']) assert.match(sheet, new RegExp(`\\.kb-notice-${kind} \\{`));
-  // And the resting tiers are stated, not left to inheritance: that is what makes it checkable.
+  // The three template families, expanded to the members the panel can build: `kb-pri-*` slices the
+  // store's own priority id to its code (exactly what `CardView` does), `kb-age-*` is the three age
+  // bands, `kb-notice-*` is the three notice kinds.
+  const families: Readonly<Record<string, readonly string[]>> = {
+    'kb-pri-': PRIORITIES.map((priority) => `kb-pri-${priority.slice(0, 2)}`),
+    'kb-age-': ['fresh', 'ageing', 'stale'].map((band) => `kb-age-${band}`),
+    'kb-notice-': ['refusal', 'info', 'error'].map((kind) => `kb-notice-${kind}`),
+  };
+  // The walk this test's name always claimed but never did: every `kb-` token the components file
+  // names is one it emits, because the class lists are its own string literals and template prefixes.
+  // A trailing dash is one of the three families above and is expanded to its members.
+  const emitted = new Set<string>();
+  for (const match of source.matchAll(/kb-[a-z0-9-]+/g)) {
+    const token = match[0] as string;
+    if (token.endsWith('-')) for (const member of families[token] ?? []) emitted.add(member);
+    else emitted.add(token);
+  }
+  assert.equal(emitted.size > 40, true, 'the walk found the panel classes, not an empty set');
+  // A class is authored when a rule selects it. This is the half that would have caught the dead
+  // `kb-lane-loading` push and the bare `kb-age` hook, and it fails the moment either comes back.
+  const unstyled = [...emitted].filter((token) => !new RegExp(`\\.${token}(?![a-zA-Z0-9_-])`).test(sheet));
+  assert.deepEqual(unstyled, [], 'these classes are emitted by components.ts and styled by nothing');
+  // And the resting tiers are stated, not left to inheritance: that is what makes the families a
+  // checkable set rather than a matter of restraint.
   assert.match(sheet, /\.kb-age-fresh \{ color: var\(--dsw-alias-label-secondary/);
   assert.match(sheet, /\.kb-pri-p4 \{ color: var\(--dsw-alias-label-primary/);
 
@@ -868,15 +1009,15 @@ test('P4.11: every class the templates emit has a rule, and it is rendered', asy
   assert.ok(cards.length > 0);
   for (const card of cards) {
     const priority = card.querySelector('.kb-pri');
-    const age = card.querySelector('.kb-age');
-    assert.ok(priority !== null && age !== null, 'every card carries a priority code and an age');
+    const age = card.querySelector('.kb-age-stale, .kb-age-ageing, .kb-age-fresh');
+    assert.ok(priority !== null && age !== null, 'every card carries a priority code and an age band');
     assert.equal(
-      priorityCodes.filter((code) => priority.className.includes(`kb-pri-${code}`)).length,
+      PRIORITIES.filter((entry) => priority.className.includes(`kb-pri-${entry.slice(0, 2)}`)).length,
       1,
       `one priority class on ${String(card.getAttribute('data-card'))}`
     );
     assert.equal(
-      ageBands.filter((band) => age.className.includes(`kb-age-${band}`)).length,
+      ['fresh', 'ageing', 'stale'].filter((band) => age.className.includes(`kb-age-${band}`)).length,
       1,
       `one age band on ${String(card.getAttribute('data-card'))}`
     );

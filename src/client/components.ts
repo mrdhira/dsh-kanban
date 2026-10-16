@@ -21,11 +21,11 @@
 import type { ReactElement } from 'react';
 import type { BoardStore, BoardState } from './store.js';
 import { selectedTask } from './store.js';
-import { BOARD_STATES, DROPPED_FILTER, EMPTY_FILTER, ageBand, ageDays, classLabel, columnsOf, filterCards, formatAge, formatPercent, formatStamp, hasFilter, moveTargets, priorityCode, priorityWord, sameFilter, type Column } from './model.js';
-import { beginDrag, dragOver, dropTarget, indexFromPointer, keyboardTarget, type DragState } from './dnd.js';
+import { BOARD_STATES, DROPPED_FILTER, EMPTY_FILTER, ageBand, ageDays, classLabel, columnsOf, filterStates, formatAge, formatPercent, formatStamp, hasFilter, moveTargets, priorityCode, priorityWord, sameFilter, type Column } from './model.js';
+import { beginDrag, dragOver, dropTarget, indexFromPointer, isDropAllowed, keyboardTarget, type DragState } from './dnd.js';
 import { API_PREFIX } from './api.js';
 import { STYLES, STYLE_ID } from './styles.js';
-import { CHECK_LABEL, CLASSES_OF_SERVICE, CLASS_LABEL, DEFAULT_DOW, PRIORITIES, PRIORITY_LABEL, STATE_LABEL, type CheckId, type ClassOfService, type Priority, type State, type Task } from '../store/types.js';
+import { CHECK_LABEL, CLASSES_OF_SERVICE, CLASS_LABEL, PRIORITIES, PRIORITY_LABEL, STATE_LABEL, type CheckId, type ClassOfService, type Priority, type State, type Task } from '../store/types.js';
 
 /** The `require('react')` handle, passed down as a prop so this module stays realm-agnostic. */
 export interface ReactLike {
@@ -67,13 +67,22 @@ let drawerOpenedByKeyboard = false;
 /**
  * The empty board the pending state draws.
  *
- * Only `columnsOf`'s inputs are here — the DoW (for the WIP limits) and an empty task list — because
- * that is all a column needs to exist: a state, a label, a limit and no cards. So the loading state
- * shows the same five lanes the real board will, each with one skeleton line where a card will land,
- * instead of an empty panel. Nothing else is invented: no card, no count, no metric.
+ * Only the board's own state order is used — `filterStates(EMPTY_FILTER)`, the same five lanes the
+ * real board draws — because that is all a pending column can honestly know: a state, a label and no
+ * cards. **No limit is printed**: the Definition of Workflow arrives with the payload, and a pending
+ * lane that printed `0/2` from this file's default could contradict the board it is standing in for.
+ * So the loading state shows the same five lanes the real board will, each with one skeleton line
+ * where a card will land, instead of an empty panel. Nothing else is invented: no card, no count, no
+ * metric, no cap.
  */
 function pendingColumns(): Column[] {
-  return columnsOf({ dow: DEFAULT_DOW, tasks: [] } as unknown as Parameters<typeof columnsOf>[0], EMPTY_FILTER);
+  return filterStates(EMPTY_FILTER).map((state) => ({
+    state,
+    label: STATE_LABEL[state],
+    cards: [],
+    limit: undefined,
+    over: false,
+  }));
 }
 
 // ------------------------------------------------------------------ chrome
@@ -175,10 +184,11 @@ function MetricsStrip(props: MetricsProps): ReactElement | null {
     lead('WIP', `${metrics.wip}/${wipLimit}`),
     lead('Oldest', `${num(metrics.ageing.oldestDays)}d vs ${metrics.sle.days}d SLE · ${metrics.ageing.count} past`),
     disclosureButton(React, { label: 'More metrics', open, action: 'more-metrics', onToggle }),
-    open ? rest('Cycle', `median ${num(metrics.cycle.medianDays)}d`) : null,
+    open ? rest('Cycle', `median ${num(metrics.cycle.medianDays)}d · p85 ${num(metrics.cycle.p85Days)}d · mean ${num(metrics.cycle.meanDays)}d`) : null,
     open ? rest('Throughput', `${metrics.throughput.days7}/7d · ${metrics.throughput.days30}/30d`) : null,
-    // `p85` is deliberately absent: nine items in one 12px row is a wall, and the 85th percentile
-    // of a board this size is noise beside the median. The full metrics stay in `kanban_metrics`.
+    // The three cycle readings are one fact told three ways — the disclosure exists to hold what the
+    // front cannot, so it holds all of them rather than the median alone. The full metrics, including
+    // each band's own basis, stay in `kanban_metrics`.
     open ? rest('SLE', `${formatPercent(metrics.sle.p)}% ≤ ${metrics.sle.days}d (${metrics.sle.source})`) : null
   );
 }
@@ -288,7 +298,13 @@ function CardView(props: CardProps): ReactElement {
       event.preventDefault();
       const target = keyboardTarget(task.state, event.key === 'ArrowLeft' ? 'left' : 'right');
       if (target === null) {
-        onAnnounce(`${task.id} is already at the edge of the board`);
+        // A dropped card is not at an edge — it is not on the board at all. Saying "edge of the
+        // board" of a card the board refuses to draw is the kind of small lie this panel avoids.
+        onAnnounce(
+          task.state === 'dropped'
+            ? `${task.id} is dropped — open it and move it back to the board`
+            : `${task.id} is already at the edge of the board`
+        );
         return;
       }
       onAnnounce(`${task.id} moved to ${target}`);
@@ -322,12 +338,15 @@ function CardView(props: CardProps): ReactElement {
       onKeyDown,
       onClick: (event: { currentTarget?: { focus?: () => void } }) => {
         // Keep the keyboard's place when the pointer opens a card: the drawer returns focus here.
-        // A click that arrives while a drawer already holds focus is not the pointer opening a new
-        // one, so it does not clear the keyboard's claim on the drawer already on screen. Read
+        // A click that arrives while *this card's own* drawer already holds focus is not the pointer
+        // opening a new one, so it does not clear the keyboard's claim. Every other click does — in
+        // particular a click on a different card, whose keyed drawer replaces the one on screen, so
+        // keeping the flag there would paint a pointer-opened drawer with the keyboard ring. Read
         // duck-typed rather than through `instanceof HTMLElement`: the bundle is evaluated in a
         // realm that does not have the Node global (the harness relies on that).
         const active: { readonly className?: unknown } | null = document.activeElement;
-        if (typeof active?.className !== 'string' || !active.className.includes('kb-drawer')) {
+        const drawerHoldsFocus = typeof active?.className === 'string' && active.className.includes('kb-drawer');
+        if (!(drawerHoldsFocus && state.selectedId === task.id)) {
           drawerOpenedByKeyboard = false;
         }
         event.currentTarget?.focus?.();
@@ -342,7 +361,7 @@ function CardView(props: CardProps): ReactElement {
       task.state === 'done' ? checkGlyph(React, true, 'kb-mark') : null,
       React.createElement('span', { className: 'kb-card-id' }, task.id),
       React.createElement('span', { className: `kb-pri kb-pri-${task.priority.slice(0, 2)}` }, priorityCode(task.priority)),
-      React.createElement('span', { className: `kb-age kb-age-${band}` }, age)
+      React.createElement('span', { className: `kb-age-${band}` }, age)
     ),
     React.createElement('div', { className: 'kb-card-title' }, task.title),
     // No chips, no empty row: a card with nothing to flag is id, priority code, age and title.
@@ -363,7 +382,9 @@ function Lane(props: LaneProps): ReactElement {
   const { React, state, store, column, drag, setDrag, onAnnounce, cardNodes, loading } = props;
   // A ref to the lane's card list, so a drop lands where the gap appeared rather than at the end.
   const cardsRef = React.useRef<{ children?: ArrayLike<{ getBoundingClientRect(): { top: number; height: number } }> } | null>(null);
-  const isOver = drag?.overState === column.state;
+  // The drop affordance is the lane a drop is allowed on and is currently over — `isDropAllowed`
+  // states the "allowed" half, so a lane that could not take the card never lights up for it.
+  const isOver = drag !== null && isDropAllowed(drag.fromState, column.state) && drag.overState === column.state;
 
   const indexAt = (clientY: number): number => {
     const container = cardsRef.current;
@@ -383,7 +404,6 @@ function Lane(props: LaneProps): ReactElement {
   // because a drop target you cannot hit is not a drop target.
   if (column.cards.length === 0) classes.push('kb-lane-empty');
   if (column.cards.length === 0 && drag !== null) classes.push('kb-lane-awake');
-  if (column.cards.length === 0 && loading) classes.push('kb-lane-loading');
 
   return React.createElement(
     'div',
@@ -414,7 +434,10 @@ function Lane(props: LaneProps): ReactElement {
         { className: 'kb-lane-count' },
         column.limit === undefined ? String(column.cards.length) : `${column.cards.length}/${column.limit}`
       ),
-      column.over ? React.createElement('span', { className: 'kb-chip' }, 'over limit') : null
+      // The one chip that is a warning, not a fact: same colour and weight as the red count beside
+      // it, so an over-limit lane reads as one signal told twice rather than a coloured number
+      // beside a chip that looked like every other chip.
+      column.over ? React.createElement('span', { className: 'kb-chip kb-chip-warn' }, 'over limit') : null
     ),
     React.createElement(
       'div',
@@ -452,7 +475,7 @@ interface ChecksProps extends ChildProps {
 }
 
 function ChecklistRows(props: ChecksProps): ReactElement {
-  const { React, store, task, gate, items } = props;
+  const { React, state, store, task, gate, items } = props;
   const checked: Record<string, unknown> = gate === 'dor' ? { ...task.dor } : { ...task.dod };
   return React.createElement(
     'div',
@@ -467,6 +490,12 @@ function ChecklistRows(props: ChecksProps): ReactElement {
           type: 'button',
           className: `kb-check kb-btn${missing ? ' kb-check-missing' : ''}`,
           'aria-pressed': !missing,
+          // A tick that cannot land is the defect this prevents: while a mutation is in flight the
+          // write's own optimistic update has not been confirmed, so a second tick would be sent
+          // against a revision the host is already answering. The row is present but inert, and --
+          // because a ticked row is `aria-pressed="true"` -- it is the one button that is both
+          // chosen and disabled, which the sheet's `[aria-pressed="true"]:disabled` rule exists for.
+          disabled: state.busy,
           onClick: () => {
             void store.tick(task.id, gate, id, missing);
           },
@@ -1002,13 +1031,16 @@ export function BoardPage(props: BoardProps): ReactElement {
       { className: 'kb-head' },
       React.createElement('h1', { className: 'kb-title' }, state.payload?.title ?? 'Kanban'),
       // The count line folds the filter's own answer into the revision the board is showing, so a
-      // narrowed board says so in the header instead of in a row of its own.
+      // narrowed board says so in the header instead of in a row of its own. The test is `shown !==
+      // total`, not `filtered`: an unfiltered board still draws fewer cards than the host holds when
+      // one is `dropped` (it has no lane) or the read was truncated, and a header that said "6 cards"
+      // over five drawn cards is the kind of small lie this board exists to avoid.
       React.createElement(
         'span',
         { className: 'kb-sub' },
         state.payload === null
           ? 'connecting…'
-          : filtered
+          : filtered || shown !== total
             ? `rev ${state.payload.rev} · showing ${shown} of ${total} cards`
             : `rev ${state.payload.rev} · ${total} cards`
       ),

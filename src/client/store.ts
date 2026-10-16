@@ -18,7 +18,6 @@ import { Refusal, type BoardTransport, type OriginInfo, type TaskDetail } from '
 import {
   applyLocalMove,
   checkMoveLocally,
-  columnsOf,
   filterCards,
   positionForIndex,
   type BoardPayload,

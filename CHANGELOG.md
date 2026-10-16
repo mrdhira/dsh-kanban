@@ -17,16 +17,19 @@ answered it by **adding** controls. This pass keeps every capability and removes
   also where an agent's `kanban_create` values can be edited. *Watch:* whether a human creating a
   `p1` card finds the drawer in one move.
 - **The metrics strip leads with two numbers** (`WIP n/limit`, `oldest Xd vs SLE Yd`) and the
-  history — cycle median, throughput, the SLE's basis — opens behind `More metrics`. Nothing was
-  dropped: `p85` was already absent from the strip and `kanban_metrics` remains the full answer.
+  history — cycle median, p85 and mean, throughput, the SLE's basis — opens behind `More metrics`.
+  The disclosure carries all three cycle readings rather than the median alone; `kanban_metrics`
+  remains the full answer, including each band's own basis.
 - **The host diagnostic line** (`host … · __DSH_TRANSPORT__.streamBaseUrl`) is behind a `Host`
   toggle. The error notice that replaces the lanes on a failed read still names the URL, the origin
   and the document, which is the only moment the line was worth reading.
 - **The state-filter chip row is gone.** It repeated the lane headers, and the two saved views
   (`Board`, `Ageing`) already filter by state. The panel's own `All` button stays: it is **not** one
   of the seeded views, it is the only control that shows `done`, and without it choosing `Board`
-  would be a one-way door. State filtering is unchanged for `kanban_list`, `bin/kanban.mjs` and the
-  other tools.
+  would be a one-way door. State filtering is unchanged for `kanban_list`, `bin/kanban.mjs` (which
+  still takes `--state`) and the other tools — but **the panel cannot ask for an arbitrary state set
+  any more**: the seeded views, `All` and `Dropped` are the only state questions it can put, and
+  that trade was approved in the distill rather than lost by accident.
 - **Card chips carry only what demands attention** — `blocked`, the P0/P1 word, an age band past
   `fresh`, and `expedite`. Class, assignee, project and sprint moved to the drawer, which already
   printed all four. `expedite` keeps its word although it is a class: its other signal on the card
@@ -40,6 +43,27 @@ answered it by **adding** controls. This pass keeps every capability and removes
 No capability became unreachable; the DOM suite pins each one (`test/client.dom.test.ts`, the `D1`
 / `D5` / `D6` cases and the updated `A1`–`A3`, `C9`). The state-chip helpers `activeStates` and
 `filterableStates` went with the chip row. No CSS rule was orphaned.
+
+### Fixed after the independent review
+
+The reviewer read the distill and polish commits against the code rather than the tests and found
+six places where this file and DESIGN.md claimed something the code did not do. All six are fixed,
+in the code where the intent was right and in the claim where it was not:
+
+- **The `over limit` chip really is a warning now** (`kb-chip kb-chip-warn`): the stylesheet authored
+  the class and the lane never emitted it, so OQ14 described a chip that looked like every other one.
+- **The dead `kb-lane-loading` push is gone**, and the bare `kb-age` hook with it. `P4.11` now walks
+  *every* class the components file emits against the sheet, which is what DESIGN.md always claimed
+  it did — and which fails if either hook returns.
+- **A keyboard-opened drawer no longer leaks its claim onto another card**: the flag is kept only
+  when the clicked card is the selected one, so a click that replaces the drawer is a pointer path.
+- **Checklist rows are disabled while a mutation is in flight**, so the `[aria-pressed="true"]:disabled`
+  rule and the sentence about it describe a state the panel really renders.
+- **A pending lane prints no WIP limit** it has not been told, instead of a `0/2` synthesised from
+  `DEFAULT_DOW`, and the pending lanes are named as `BOARD_STATES` rather than "the saved views".
+- **The header count matches the screen** (`showing 5 of 6 cards` when a dropped card has no lane),
+  `Alt+←/→` on a dropped card says it is dropped rather than at an edge, and `More metrics` carries
+  the cycle's median, p85 and mean.
 
 ## 1.0.0 — 2026-10-15
 

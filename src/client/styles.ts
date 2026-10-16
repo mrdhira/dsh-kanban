@@ -143,7 +143,7 @@ export const STYLES = `
    carried by a drawn mark, not by an edge. The fallback is the ordinary label colour, so a missing
    token degrades to "marked" rather than to nothing. */
 .kb-mark { align-self: center; flex: 0 0 auto; color: var(--dsw-alias-state-success-primary, var(--dsw-alias-label-primary, inherit)); }
-.kb-card-id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--dsw-alias-label-secondary, rgba(128,128,128,0.9)); font-size: 12px; }
+.kb-card-id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--dsw-alias-label-secondary, var(--kb-label-secondary)); font-size: 12px; }
 .kb-card-title { flex: 1 1 auto; }
 .kb-card-meta { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font-size: 12px; color: var(--dsw-alias-label-secondary, inherit); }
 .kb-pri { font-weight: 600; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
@@ -174,12 +174,12 @@ export const STYLES = `
 /* Long prose (the acceptance line) reads at a sane measure instead of running the drawer's width. */
 .kb-prose { max-width: var(--kb-measure, 62ch); text-wrap: pretty; }
 .kb-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-word; }
-.kb-input { border: 1px solid var(--dsw-alias-border-l1, rgba(128,128,128,0.35)); background: transparent; color: inherit;
+.kb-input { border: 1px solid var(--dsw-alias-border-l1, var(--kb-border-l1)); background: transparent; color: inherit;
   border-radius: var(--kb-radius-control, 7px); padding: 3px 8px; font: inherit; min-width: 140px; transition: background-color 140ms ease-out, border-color 140ms ease-out; }
 /* A select is a value picker, not a text box: it does not need the search field's width. */
 select.kb-input { min-width: 0; padding-right: 4px; }
 input[type="number"].kb-input { min-width: 76px; }
-.kb-input::placeholder { color: var(--dsw-alias-label-secondary, rgba(128,128,128,0.9)); }
+.kb-input::placeholder { color: var(--dsw-alias-label-secondary, var(--kb-label-secondary)); }
 .kb-input:hover { border-color: var(--dsw-alias-border-l2, var(--dsw-alias-border-l1, rgba(128,128,128,0.5))); }
 .kb-metrics { display: flex; gap: 14px; flex-wrap: wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
   font-variant-numeric: tabular-nums; }
@@ -218,7 +218,7 @@ body[data-ds-dark-theme] .kb-check-missing { color: var(--dsw-alias-state-warn-p
    rule a descendant chain that matches nothing, which is exactly how this block shipped dead. */
 body[data-ds-dark-theme] .kb-sub,
 body[data-ds-dark-theme] .kb-input::placeholder,
-body[data-ds-dark-theme] .kb-empty { color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary, rgba(128,128,128,0.9))); }
+body[data-ds-dark-theme] .kb-empty { color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary, var(--kb-label-secondary))); }
 `;
 
 /** The id the panel's own stylesheet is injected under, so it is added exactly once. */
