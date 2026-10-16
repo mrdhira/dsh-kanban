@@ -49,10 +49,16 @@ reload (T-008).
 
 ```bash
 pnpm install --ignore-workspace   # this plugin's own toolchain, not the profile's
+node scripts/gate.mjs             # build + typecheck + tests + freshness, ending in GATE PASS
 node build.mjs                    # host + browser halves, the CLI, and the declarations
 node scripts/typecheck.mjs        # three projects: host, browser, tests
 npm test                          # builds first, then runs the suite under the guard
 ```
+
+Run the gate rather than composing the steps by hand: it judges every step by **process exit code** and
+prints one verdict, because twice this project read a broken build's `tail -1` as green — the guard prints
+its own memory line last — and the suite then passed against a **stale bundle**. A build failure
+invalidates every test result after it, so the gate builds first and checks freshness last.
 
 The suite covers the store, the policy engine, the flow metrics, the generated view, the import of
 the pre-Kanban board, the CLI as a black box (including its exit codes), the browser model and drag
