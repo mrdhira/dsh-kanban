@@ -53,8 +53,10 @@ the gate that refused the human", because that requires the rules to live below 
 
 - Nine tools (`kanban_list`, `get`, `create`, `update`, `move`, `delete`, `sprint`, `board`,
   `metrics`) plus the `kanban` skill for agents; `bin/kanban.mjs` for the human's shell.
-- Three views over one board (Board / Ageing / All), lane WIP badges, a card drawer with both
-  checklists, comments, and history, plus sprint and metrics surfaces.
+- A seeded **Board** view (backlog through review) and an **Ageing** view, plus **All** as the escape
+  from the default filter -- without it a filtered board strands every `done` card, which is why it stays
+  even though it is not a seeded view. Each lane shows its count and flags when it is over its limit; a
+  card drawer carries both checklists, comments and history, alongside sprint and metrics surfaces.
 - **Priority and class of service are the human's** — editing happens in the card drawer, and
   creation is a title with the store's defaults (`p2-normal` / `standard`); an agent may still pass
   both to `kanban_create`, including a template's carried values.
