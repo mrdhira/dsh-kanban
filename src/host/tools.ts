@@ -132,6 +132,50 @@ export function toParameterSchema(spec: Record<string, unknown>): Record<string,
   return { type: 'object', properties, ...(required.length > 0 ? { required } : {}) };
 }
 
+/**
+ * Is this definition's schema the shape the **provider** receives?
+ *
+ * This exists because the failure it prevents is not a failed tool call — it is a failed *turn*.
+ * Nine tools were registered with a null root type, so every model request in the session was
+ * rejected with `Invalid schema for function 'kanban_board': schema must be a JSON Schema of
+ * 'type: "object"', got 'type: null'` — for fifteen hours — while this plugin reported nine tools
+ * and zero warnings. Registration success is not usability, so the registration boundary asks the
+ * provider-facing question itself and refuses anything doubtful.
+ *
+ * Both fields are checked, because both are projected to the model: `parameters` as the tool's
+ * argument schema and `output.schema` as its result schema. `defineTool`'s *input* shorthand is a
+ * third shape, and passing that straight through is exactly the bug this guards.
+ */
+export function toolSchemaIssues(definition: DshToolDefinition): string[] {
+  const issues: string[] = [];
+
+  const inspect = (label: string, schema: unknown): void => {
+    if (typeof schema !== 'object' || schema === null) {
+      issues.push(`${label} is not an object`);
+      return;
+    }
+    const spec = schema as Record<string, unknown>;
+    if (spec.type !== 'object') {
+      issues.push(`${label}.type must be "object" — the provider rejects a root type of ${JSON.stringify(spec.type ?? null)}`);
+    }
+    if (typeof spec.properties !== 'object' || spec.properties === null) {
+      issues.push(`${label}.properties must be an object`);
+    }
+    if (spec.required !== undefined && !Array.isArray(spec.required)) {
+      issues.push(`${label}.required must be an array of names at the object level`);
+    }
+    for (const [key, property] of Object.entries((spec.properties ?? {}) as Record<string, Record<string, unknown>>)) {
+      if (property?.required !== undefined) {
+        issues.push(`${label}.properties.${key}.required is not supported — move it into the root required array`);
+      }
+    }
+  };
+
+  inspect('parameters', definition.parameters);
+  inspect('output.schema', definition.output.schema);
+  return issues;
+}
+
 /** A compact board listing, ordered for reading rather than for the database. */
 function boardText(tasks: readonly Task[], dow: { dor: readonly string[]; dod: readonly string[] }): string {
   if (tasks.length === 0) return 'No cards match.';

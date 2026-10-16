@@ -23,7 +23,7 @@ import {
 import { API_PREFIX, createApiHandler } from './api.js';
 import { readConfig, type KanbanConfig } from './config.js';
 import { SKILL_CONTENT, SKILL_DESCRIPTION, SKILL_NAME, SKILL_WHEN_TO_USE } from './skill.js';
-import { createTools } from './tools.js';
+import { createTools, toolSchemaIssues } from './tools.js';
 import type { ProbeRecord } from './probe.js';
 
 /**

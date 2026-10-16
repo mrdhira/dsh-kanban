@@ -25,7 +25,7 @@ import {
   type Board,
 } from '../lib/v1/store/index.js';
 import { PolicyViolation, InvalidError } from '../lib/v1/store/errors.js';
-import { TOOL_NAMES, createTools } from '../lib/v1/host/tools.js';
+import { TOOL_NAMES, createTools, toolSchemaIssues } from '../lib/v1/host/tools.js';
 import type { DshJson, DshToolDefinition, DshToolRunContext } from '../lib/v1/types/dsh.js';
 
 const NOW = new Date('2026-10-15T12:00:00.000Z');
@@ -448,4 +448,46 @@ test('every tool parameters schema is object-rooted JSON Schema, which is what t
   }
   const move = byName(tools(openBoard(':memory:')), 'kanban_move').parameters as { required?: string[] };
   assert.ok(move.required?.includes('toState'), 'a per-property required: true lands in the root array');
+});
+
+test('every shipped tool passes the provider-facing schema guard', () => {
+  for (const tool of tools(openBoard(':memory:'))) {
+    assert.deepEqual(toolSchemaIssues(tool), [], `${tool.name} would be refused at registration`);
+  }
+});
+
+test('the guard refuses the exact shape that took the session down', () => {
+  const shipped = byName(tools(openBoard(':memory:')), 'kanban_move');
+  // The per-property dialect, passed straight through: no root type, and `required` on the property.
+  // This is what the registry projected to the provider, and the provider rejected *every* request.
+  const asShorthand = {
+    ...shipped,
+    parameters: {
+      id: { type: 'string', required: true, description: 'The card id.' },
+      toState: { type: 'string', required: true, enum: ['ready'] },
+    },
+  } as unknown as DshToolDefinition;
+  const issues = toolSchemaIssues(asShorthand);
+  // Two independent things are wrong with the shorthand, and the guard names both: there is no root
+  // type, and — because the shorthand *is* the properties map — there is no `properties` either.
+  assert.equal(issues.some((issue) => issue.includes('parameters.type must be "object"')), true);
+  assert.equal(issues.some((issue) => issue.includes('parameters.properties must be an object')), true);
+
+  // A schema that is object-rooted but keeps `required: true` on its properties is refused too,
+  // which is the shape the *output* schemas had.
+  const missingRoot = { ...shipped, parameters: { type: 'object', properties: { id: { type: 'string', required: true } } } } as unknown as DshToolDefinition;
+  assert.equal(toolSchemaIssues(missingRoot).length, 1, 'the property-level required is still refused');
+
+  // An output schema that is not object-rooted is refused too — the guard checks both fields.
+  const badOutput = { ...shipped, output: { ...shipped.output, schema: { type: 'null' } } } as unknown as DshToolDefinition;
+  assert.equal(toolSchemaIssues(badOutput).some((issue) => issue.includes('output.schema.type')), true);
+});
+
+test('the guard accepts a minimal but well-formed schema', () => {
+  const shipped = byName(tools(openBoard(':memory:')), 'kanban_metrics');
+  assert.deepEqual(
+    toolSchemaIssues({ ...shipped, parameters: { type: 'object', properties: {} } } as unknown as DshToolDefinition),
+    [],
+    'a tool that takes no arguments is legal'
+  );
 });
