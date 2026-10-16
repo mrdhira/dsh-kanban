@@ -76,12 +76,12 @@ export function reloadPlugin(
     return { ok: false, api: 'none', message: 'no Loader on this context; reload the app instead' };
   }
 
-  const entries = loader.entries ?? [];
+  const entries = entryList(loader);
   const entry = entries.find((candidate) => isOurs(candidate, pluginName));
   if (entry === undefined) {
     return {
       ok: false,
-      api: 'loader.entries',
+      api: `loader.entries (${describeEntries(loader)})`,
       message: `no Loader entry matched ${pluginName}`,
       entries: entries.map(entryIdOf),
     };
@@ -107,4 +107,31 @@ export function reloadPlugin(
     api: 'unsupported',
     message: `the entry ${entryIdOf(entry)} exposes neither stop/start nor a loader.update`,
   };
+}
+
+/**
+ * The Loader's entry collection, whatever shape it is in.
+ *
+ * `Loader extends EntryTree`, and `EntryTree.entries` is **not an array** — the first live call to this
+ * route failed with `entries.find is not a function`, which is exactly the kind of assumption that costs a
+ * restart to discover. So all three plausible shapes are accepted (array, `Map`, keyed object) and an
+ * unexpected one is *described* rather than guessed at, because the next reader deserves the real shape in
+ * the failure message instead of another round trip.
+ */
+function entryList(loader: LoaderLike): readonly LoaderEntryLike[] {
+  const raw: unknown = loader.entries;
+  if (Array.isArray(raw)) return raw as readonly LoaderEntryLike[];
+  if (raw instanceof Map) return [...raw.values()] as readonly LoaderEntryLike[];
+  if (raw !== null && typeof raw === 'object') return Object.values(raw as Record<string, LoaderEntryLike>);
+  return [];
+}
+
+/** What `entries` actually is, for the failure message. */
+function describeEntries(loader: LoaderLike): string {
+  const raw: unknown = loader.entries;
+  if (raw === undefined) return 'absent';
+  if (raw === null) return 'null';
+  const kind = Array.isArray(raw) ? 'array' : raw instanceof Map ? 'Map' : typeof raw;
+  const size = typeof raw === 'object' && raw !== null ? Object.keys(raw as object).length : 0;
+  return `${kind}, ${size} key(s)`;
 }

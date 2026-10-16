@@ -893,3 +893,25 @@ test('POST /reload is the human\'s, and says which API it used', async () => {
     box.restore();
   }
 });
+
+test('the Loader entry collection is read whatever shape it is, and an odd one is described', () => {
+  // The first live call to POST /reload failed with `entries.find is not a function`: `Loader extends
+  // EntryTree` and its `entries` is not an array. Accept the plausible shapes and *describe* an
+  // unexpected one, so the next failure names the real shape instead of costing a restart to find.
+  const entry = (id: string) => ({ options: { id }, stop: () => {}, start: () => {} });
+  const scheduled: (() => void)[] = [];
+  const run = (entries: unknown) =>
+    reloadPlugin({ get: () => ({ entries }) } as unknown as DshHostContext, 'kanban', (work) => scheduled.push(work), 0);
+
+  assert.equal(run([entry('include:kanban')]).ok, true, 'an array');
+  assert.equal(run(new Map([['kanban', entry('include:kanban')]])).ok, true, 'a Map');
+  assert.equal(run({ kanban: entry('include:kanban') }).ok, true, 'a keyed object');
+
+  const odd = run({ notEntries: () => {} } as unknown);
+  assert.equal(odd.ok, false);
+  assert.match(odd.api, /loader\.entries \(object, 1 key\(s\)\)/, 'the failure names the shape it saw');
+
+  const absent = run(undefined);
+  assert.equal(absent.ok, false);
+  assert.match(absent.api, /absent/);
+});
