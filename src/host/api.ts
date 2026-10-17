@@ -35,7 +35,6 @@ import {
   createSprint,
   createTask,
   getTask,
-  importTodoMd,
   listComments,
   listEvents,
   listSprints,
@@ -46,7 +45,6 @@ import {
   purgeTask,
   readBoardTitle,
   readDow,
-  renderTodoMd,
   saveTemplate,
   saveView,
   setCheck,
@@ -67,8 +65,6 @@ export interface ApiDeps {
   readonly board: () => Board;
   readonly config: () => KanbanConfig;
   readonly buildId: string;
-  readonly mirror: () => void;
-  readonly todoMdPath: string;
   /**
    * Restart this plugin's host half in place. Present so a host-half fix costs a click rather than
    * every other session in the app losing its place in the queue.
@@ -253,7 +249,7 @@ function boardPayload(deps: ApiDeps): Record<string, unknown> {
     sprints: listSprints(board),
     invalid: listed.invalid,
     total: listed.total,
-    // The panel and the mirror both read at most 500 cards. Past that the metrics would be computed
+    // The panel reads at most 500 cards. Past that the metrics would be computed
     // from a subset without saying so, so the payload says it: a board that silently reports eleven
     // of thirteen cards is the failure this field exists to prevent.
     truncated: listed.total > listed.tasks.length ? { shown: listed.tasks.length, total: listed.total } : null,
@@ -263,12 +259,11 @@ function boardPayload(deps: ApiDeps): Record<string, unknown> {
 }
 
 /**
- * Operations that change the rules, or migrate the board's history, are the human's.
+ * Operations that change the rules are the human's.
  *
  * `set-dow` is the control itself — unauthenticated, it let any actor rewrite the WIP limits or
- * replace the Definition of Ready with something that makes every move throw — and `import-todo`
- * writes rows that bypass every gate on purpose, so it is a migration tool rather than a way to
- * file work. Both are now refused to an agent, and the DoW is validated at the store.
+ * replace the Definition of Ready with something that makes every move throw. It is refused to an
+ * agent, and the DoW is validated at the store.
  */
 function requireHuman(actor: Actor, what: string): void {
   if (actor.kind !== 'human') {
@@ -445,14 +440,6 @@ function applyOp(
       );
     }
 
-    case 'import-todo': {
-      requireHuman(actor, 'importing a pre-Kanban board');
-      const text = str(payload, 'text');
-      if (text === undefined) throw new Error('import-todo needs the markdown text');
-      const result = importTodoMd(board, text, { actor, now });
-      return result;
-    }
-
     case 'set-dow': {
       requireHuman(actor, 'changing the Definition of Workflow');
       const raw = payload.dow;
@@ -465,12 +452,6 @@ function applyOp(
       // storing one is indistinguishable from disabling WIP control.
       writeDow(board, raw as never);
       return readDow(board);
-    }
-
-    case 'mirror': {
-      // The one op that rewrites the view without moving the revision, so it asks explicitly.
-      deps.mirror();
-      return { mirrored: true };
     }
 
     default:
@@ -602,28 +583,6 @@ export function createApiHandler(deps: ApiDeps): DshWebRoute['handler'] {
         return;
       }
 
-      if (route === '/export' && method === 'GET') {
-        const board = deps.board();
-        const listed = listTasks(board, { limit: 500 });
-        const markdown = renderTodoMd({
-          tasks: listed.tasks,
-          dow: readDow(board),
-          metrics: computeFlowMetrics({
-            tasks: listed.tasks,
-            now: new Date(),
-            dow: readDow(board),
-            boardRev: boardRevision(board),
-          }),
-          boardTitle: readBoardTitle(board),
-          boardRev: boardRevision(board),
-          generatedAt: new Date().toISOString(),
-          invalid: listed.invalid,
-          total: listed.total,
-        });
-        send(res, 200, markdown, 'text/markdown; charset=utf-8');
-        return;
-      }
-
       if (route === '/mutate' && method === 'POST') {
         const raw = await readBody(req);
         let parsed: unknown;
@@ -640,16 +599,8 @@ export function createApiHandler(deps: ApiDeps): DshWebRoute['handler'] {
           return;
         }
         const actor = actorFrom(req);
-        // One place decides whether the generated view needs rewriting: if the mutation moved the
-        // revision, it changed something the view renders. Per-branch `deps.mirror()` calls were how
-        // `create` came to be forgotten, leaving `todo.md` stale after a card was made over HTTP —
-        // which the drift check then reported. Comparing revisions cannot go out of date as ops are
-        // added, and it is the same rule the CLI uses.
-        const revBefore = boardRevision(deps.board());
         const result = applyOp(deps, op, body, actor);
-        const revAfter = boardRevision(deps.board());
-        if (revAfter !== revBefore) deps.mirror();
-        sendJson(res, 200, { ok: true, rev: revAfter, op, result });
+        sendJson(res, 200, { ok: true, rev: boardRevision(deps.board()), op, result });
         return;
       }
 

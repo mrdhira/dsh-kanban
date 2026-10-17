@@ -136,7 +136,7 @@ export const MIGRATIONS: readonly string[] = [
    * v2 — the write scope, as data.
    *
    * The Definition of Ready has always named `write-scope`, but no tool could supply the fact:
-   * `migrate-todo.ts` read a legacy column, so every card authored through `kanban_*` was gated on
+   * it lived only in a legacy import column, so every card authored through `kanban_*` was gated on
    * something no caller could provide. The column is JSON text like `tags`/`links`; a database from
    * v1 gains it with every existing row at `'[]'`, which is honest — those rows never recorded one.
    *

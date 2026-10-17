@@ -7,8 +7,8 @@
  * which WAL plus `busy_timeout` plus the `rev` column already handle. The alternative — an async
  * driver — would buy nothing and would make every policy check a chance to interleave.
  *
- * Two facts about the driver are load-bearing and were observed, not assumed (see
- * `tasks/T-013-dsh-kanban/probes.md`):
+ * Two facts about the driver are load-bearing and were observed, not assumed (see the
+ * `dsh-kanban` probes recorded in `docs/kanban.md`):
  *
  * - **booleans are rejected** when binding (`TypeError`), so nothing in this store stores one:
  *   "blocked" is `blocked_reason IS NOT NULL`, and tags/links/checklists are JSON text.
@@ -40,14 +40,14 @@ export function dshHome(): string {
   return configured !== undefined && configured.length > 0 ? configured : join(homedir(), '.dsh');
 }
 
-/** The default store location: `$DSH_HOME/tasks/board.db`. */
+/**
+ * The default store location: `$DSH_HOME/.kanban/board.db`.
+ *
+ * The hidden directory is the whole home the board has: `openBoard` creates it when it is absent,
+ * so a fresh install needs no task-folder tree, no Markdown mirror and no per-card folders.
+ */
 export function defaultBoardPath(): string {
-  return join(dshHome(), 'tasks', 'board.db');
-}
-
-/** The default generated mirror: `$DSH_HOME/tasks/todo.md`. */
-export function defaultMirrorPath(): string {
-  return join(dshHome(), 'tasks', 'todo.md');
+  return join(dshHome(), '.kanban', 'board.db');
 }
 
 /**

@@ -15,7 +15,7 @@
  *
  * A DSH update can move any of this. When it does, the failure is loud — a missing method throws
  * in `apply()` and the framework abdicates the half — and the fix starts in
- * `~/.dsh/tasks/lesson.md`, not in a silent patch.
+ * `~/.dsh/memory/lessons.md`, not in a silent patch.
  */
 
 /** One slot contribution's registration options. */

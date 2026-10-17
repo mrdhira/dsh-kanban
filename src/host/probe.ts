@@ -2,7 +2,7 @@
  * The probe record: what this plugin found when it loaded, written where it can be read from
  * outside the app.
  *
- * This exists because the three P0 questions (`tasks/T-013-dsh-kanban/probes.md`) can only be
+ * This exists because the three P0 questions (recorded in `docs/kanban.md`) can only be
  * answered *inside* the host process, and the host process is an Electron main process with no
  * console anyone can read. A plugin that fails to load leaves no trace — the framework abdicates a
  * throwing entry in silence, which is how a "registered and healthy" entry once rendered nothing

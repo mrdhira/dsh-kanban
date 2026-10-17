@@ -24,7 +24,7 @@ export type State = (typeof STATES)[number];
 export const WIP_STATES = ['in-progress', 'review'] as const;
 export type WipState = (typeof WIP_STATES)[number];
 
-/** Human-facing labels, so the panel, the mirror and the CLI agree on one spelling. */
+/** Human-facing labels, so the panel, the tools and the CLI agree on one spelling. */
 export const STATE_LABEL: Readonly<Record<State, string>> = {
   backlog: 'Backlog',
   ready: 'Ready',

@@ -18,9 +18,10 @@ export const SKILL_WHEN_TO_USE =
 
 export const SKILL_CONTENT = `# Working the Kanban board
 
-The board lives at \`$DSH_HOME/tasks/board.db\` and is shared: Dhira moves the same cards by hand in
-the Kanban panel, and \`tasks/todo.md\` is **generated** from it — never edit that file, edit the
-board. Every mutation you make is one row plus one event, so the flow metrics stay honest.
+The board lives at \`$DSH_HOME/.kanban/board.db\` and is shared: Dhira moves the same cards by hand in
+the Kanban panel. The SQLite file is the only copy — there is no Markdown view and no per-card
+folder to keep in step, so never hand-edit the database: edit the board through the tools. Every
+mutation you make is one row plus one event, so the flow metrics stay honest.
 
 ## The five things to know before you move anything
 
@@ -55,7 +56,7 @@ board. Every mutation you make is one row plus one event, so the flow metrics st
 | \`kanban_move\` | change column. This is the one that enforces the gates and the WIP limits. |
 | \`kanban_delete\` | \`drop\` with a reason (kept in the metrics), or \`purge\` — which only Dhira may do. |
 | \`kanban_sprint\` | create, start, close or cancel a sprint. A sprint is 31 days or less and has a goal. |
-| \`kanban_board\` | views, templates, the Definition of Workflow, the generated mirror, and the raw export. |
+| \`kanban_board\` | views, templates and the Definition of Workflow. |
 | \`kanban_metrics\` | WIP, throughput, work item age, cycle time and the SLE. |
 
 ## How to run a piece of work
@@ -66,7 +67,7 @@ board. Every mutation you make is one row plus one event, so the flow metrics st
 4. Do the work. Record the evidence as you get it — a card with no evidence is a card that will not
    pass its own DoD.
 5. \`kanban_move\` to \`review\`. If the work is finished, tick the DoD and move to \`done\`.
-6. If a correction landed, write it in \`tasks/lesson.md\` before closing the card; the DoD asks.
+6. If a correction landed, write it in \`~/.dsh/memory/lessons.md\` before closing the card; the DoD asks.
 
 ## When not to use the board
 

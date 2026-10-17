@@ -14,5 +14,3 @@ export * from './db.js';
 export * from './policy.js';
 export * from './metrics.js';
 export * from './repo.js';
-export * from './mirror.js';
-export * from './migrate-todo.js';

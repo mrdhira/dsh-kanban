@@ -46,7 +46,6 @@ import {
   purgeTask,
   readBoardTitle,
   readDow,
-  renderTodoMd,
   setCheck,
   startSprint,
   suppliedChecks,
@@ -211,7 +210,6 @@ function boardText(tasks: readonly Task[], dow: { dor: readonly string[]; dod: r
 export interface ToolDeps {
   readonly board: () => Board;
   readonly config: () => KanbanConfig;
-  readonly mirror: () => void;
 }
 
 /** Build every tool definition. */
@@ -354,7 +352,7 @@ export function createTools(deps: ToolDeps): DshToolDefinition[] {
           'DoR `write-scope`: the workspace-relative file or directory prefixes this card will write, e.g. "src/store/**". An array, or a single string. A stored scope satisfies the item.',
       },
       estimate: { type: 'number', description: 'Size in points.' },
-      folder: { type: 'string', description: 'The task folder, e.g. tasks/T-013-slug.' },
+      folder: { type: 'string', description: 'A legacy folder label, kept as history only; it is not a link.' },
       template: { type: 'string', description: 'A template id from kanban_board.' },
     },
     output: {
@@ -409,7 +407,6 @@ export function createTools(deps: ToolDeps): DshToolDefinition[] {
         },
         { actor, now: new Date() }
       );
-      deps.mirror();
       const note =
         dropped.length === 0
           ? ''
@@ -476,7 +473,6 @@ export function createTools(deps: ToolDeps): DshToolDefinition[] {
         const gate = input.gate === 'dod' ? 'dod' : 'dor';
         const checkId = typeof input.checkId === 'string' ? input.checkId : '';
         const task = setCheck(board, id, gate, checkId, input.done !== false, { actor, now });
-        deps.mirror();
         return json({ card: `${task.id} ${gate} ${checkId} ${input.done !== false ? 'ticked' : 'unticked'}`, task: json(task) });
       }
       if (action === 'comment') {
@@ -485,12 +481,10 @@ export function createTools(deps: ToolDeps): DshToolDefinition[] {
       }
       if (action === 'block') {
         const task = blockTask(board, id, typeof input.reason === 'string' ? input.reason : '', { actor, now });
-        deps.mirror();
         return json({ card: `${task.id} blocked: ${task.blockedReason ?? ''}`, task: json(task) });
       }
       if (action === 'unblock') {
         const task = unblockTask(board, id, { actor, now });
-        deps.mirror();
         return json({ card: `${task.id} unblocked`, task: json(task) });
       }
 
@@ -507,7 +501,6 @@ export function createTools(deps: ToolDeps): DshToolDefinition[] {
         patch as never,
         expectedRev === undefined ? { actor, now } : { actor, now, expectedRev }
       );
-      deps.mirror();
       return json({ card: `${task.id} updated (${Object.keys(patch).join(', ') || 'nothing'})`, task: json(task) });
     },
   };
@@ -545,7 +538,6 @@ export function createTools(deps: ToolDeps): DshToolDefinition[] {
         },
         { actor: actorOf(exec), now: new Date() }
       );
-      deps.mirror();
       return json({
         card: `${task.id} → ${task.state} (rev ${task.rev})${task.startedAt === null ? '' : ` · started ${task.startedAt}`}`,
         task: json(task),
@@ -574,7 +566,6 @@ export function createTools(deps: ToolDeps): DshToolDefinition[] {
       const now = new Date();
       if (input.mode === 'purge') {
         purgeTask(deps.board(), id, { actor, now });
-        deps.mirror();
         return json({ card: `${id} purged` });
       }
       const task = moveTask(
@@ -582,7 +573,6 @@ export function createTools(deps: ToolDeps): DshToolDefinition[] {
         { id, toState: 'dropped', reason: typeof input.reason === 'string' ? input.reason : '' },
         { actor, now }
       );
-      deps.mirror();
       return json({ card: `${task.id} dropped: ${task.droppedReason ?? ''}`, task: json(task) });
     },
   };
@@ -635,7 +625,6 @@ export function createTools(deps: ToolDeps): DshToolDefinition[] {
         }
         if (action === 'close') {
           const result = closeSprint(board, sprintId, { actor, now });
-          deps.mirror();
           return json({
             summary: `${result.sprint.id} closed; ${result.returned.length} unfinished card(s) returned to the backlog`,
             returned: json(result.returned),
@@ -647,7 +636,6 @@ export function createTools(deps: ToolDeps): DshToolDefinition[] {
           typeof input.reason === 'string' ? input.reason : '',
           { actor, now }
         );
-        deps.mirror();
         return json({ summary: `${sprint.id} cancelled`, sprint: json(sprint) });
       }
       const sprints = listSprints(board);
@@ -663,12 +651,12 @@ export function createTools(deps: ToolDeps): DshToolDefinition[] {
   const boardTool: DshToolDefinition = {
     name: 'kanban_board',
     description:
-      'Read the board itself: the Definition of Workflow (states, WIP limits, SLE, policies), saved views, task templates, the generated Markdown mirror, or the raw export. Migrating a pre-Kanban board is **not** here — it writes rows that bypass every gate, so it belongs to the human (`bin/kanban.mjs migrate`).',
+      'Read the board itself: the Definition of Workflow (states, WIP limits, SLE, policies), saved views, or task templates.',
     parameters: {
       action: {
         type: 'string',
         required: true,
-        enum: ['dow', 'views', 'templates', 'export', 'mirror'],
+        enum: ['dow', 'views', 'templates'],
         description: 'What to read or do.',
       },
     },
@@ -692,24 +680,6 @@ export function createTools(deps: ToolDeps): DshToolDefinition[] {
               .join('\n') || 'No templates.',
         });
       }
-      if (action === 'mirror') {
-        deps.mirror();
-        return json({ summary: `wrote the Markdown mirror to ${deps.config().mirrorPath}` });
-      }
-      if (action === 'export') {
-        const listed = listTasks(board, { limit: 500 });
-        const markdown = renderTodoMd({
-          tasks: listed.tasks,
-          dow: readDow(board),
-          metrics: computeFlowMetrics({ tasks: listed.tasks, now: new Date(), dow: readDow(board), boardRev: boardRevision(board) }),
-          boardTitle: readBoardTitle(board),
-          boardRev: boardRevision(board),
-          generatedAt: new Date().toISOString(),
-          invalid: listed.invalid,
-        });
-        return json({ summary: markdown });
-      }
-
       const definition = readDow(board);
       const lines = [
         `Board ${readBoardTitle(board)} · rev ${boardRevision(board)}`,

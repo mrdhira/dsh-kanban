@@ -21,7 +21,6 @@ import {
   PolicyViolation,
   COMMENT_EVENT_PREVIEW_CHARS,
   MAX_COMMENT_CHARS,
-  MAX_IMPORT_CHARS,
   SCHEMA_VERSION,
   addComment,
   boardRevision,
@@ -38,7 +37,6 @@ import {
   generateTaskId,
   getTask,
   importTask,
-  importTodoMd,
   listComments,
   listEvents,
   listSprints,
@@ -793,15 +791,6 @@ test('refused: a comment longer than the cap, and the event keeps only a preview
   board.close();
 });
 
-test('refused: an import larger than the cap', () => {
-  const board = newBoard();
-  assert.throws(
-    () => importTodoMd(board, 'x'.repeat(MAX_IMPORT_CHARS + 1), { actor: HUMAN, now: NOW }),
-    InvalidError
-  );
-  assert.equal(listTasks(board, { limit: 10 }).total, 0);
-  board.close();
-});
 
 test('a limited read reports the whole count, so a partial view can be announced', () => {
   const board = newBoard();
@@ -823,8 +812,8 @@ test('openBoard() with no argument opens the default location', () => {
   try {
     process.env.DSH_HOME = home;
     const board = openBoard();
-    assert.equal(board.path, join(home, 'tasks', 'board.db'));
-    assert.equal(existsSync(join(home, 'tasks', 'board.db')), true, 'and it was created there');
+    assert.equal(board.path, join(home, '.kanban', 'board.db'));
+    assert.equal(existsSync(join(home, '.kanban', 'board.db')), true, 'and it was created there');
     board.close();
   } finally {
     if (previous === undefined) delete process.env.DSH_HOME;

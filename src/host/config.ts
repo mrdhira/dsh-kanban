@@ -8,14 +8,11 @@
  * rather than fatal: a board that refuses to open because one dev setting was misspelled would be
  * worse than a board that opens at its default path and says so.
  */
-import { defaultBoardPath, defaultMirrorPath } from '../store/index.js';
+import { defaultBoardPath } from '../store/index.js';
 
 export interface KanbanConfig {
   readonly dbPath: string;
-  readonly mirrorPath: string;
-  readonly mirror: boolean;
   readonly pollMs: number;
-  readonly importTodoMd: boolean;
 }
 
 /**
@@ -33,10 +30,7 @@ export interface KanbanConfig {
 export function defaultConfig(): KanbanConfig {
   return {
     dbPath: defaultBoardPath(),
-    mirrorPath: defaultMirrorPath(),
-    mirror: true,
     pollMs: 5000,
-    importTodoMd: true,
   };
 }
 
@@ -58,14 +52,6 @@ export function readConfig(raw: unknown): ConfigReport {
     return fallback;
   };
 
-  const boolean = (key: keyof KanbanConfig, fallback: boolean): boolean => {
-    const value = source[key];
-    if (value === undefined) return fallback;
-    if (typeof value === 'boolean') return value;
-    warnings.push(`${String(key)} must be true or false; using ${String(fallback)}`);
-    return fallback;
-  };
-
   const integer = (key: keyof KanbanConfig, fallback: number, min: number, max: number): number => {
     const value = source[key];
     if (value === undefined) return fallback;
@@ -80,10 +66,7 @@ export function readConfig(raw: unknown): ConfigReport {
   return {
     config: {
       dbPath: string('dbPath', defaults.dbPath),
-      mirrorPath: string('mirrorPath', defaults.mirrorPath),
-      mirror: boolean('mirror', defaults.mirror),
       pollMs: integer('pollMs', defaults.pollMs, 500, 120_000),
-      importTodoMd: boolean('importTodoMd', defaults.importTodoMd),
     },
     warnings,
   };

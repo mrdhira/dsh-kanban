@@ -4,6 +4,29 @@ All notable changes to `dsh-kanban`. The version identifies the generation the a
 panel footer and `/api/kanban/health` both report the build id, which is
 `dsh-kanban/<version>+<stamp>`.
 
+## Unreleased — SQLite only
+
+The board is now one file, `$DSH_HOME/.kanban/board.db`. The old folder tree, the generated Markdown
+view and every writer that existed to keep them in step are gone.
+
+### Removed
+
+- **The Markdown mirror**: `renderTodoMd` and its module, `GET /export`, the `mirror` mutation, the
+  `kanban_board` actions `mirror` and `export`, and the CLI's `mirror` and `export` verbs. `--no-mirror`
+  and the `mirror`/`mirrorPath` settings go with them.
+- **The legacy importer**: `migrate-todo.ts`, the `import-todo` mutation, and `bin/kanban.mjs migrate`.
+  The board it imported from no longer exists.
+- **The folder-tree check**: `check-board.mjs` validated rows against per-card folders and the
+  generated view; both are gone, so the check is too. The `folder` column remains as history and is
+  not a link.
+
+### Changed
+
+- `defaultBoardPath()` is `$DSH_HOME/.kanban/board.db`; the parent directory is created on first open,
+  so a fresh install needs no `tasks/` tree at all.
+- The `kanban` skill now says the database is the only copy, and lesson intake lives at
+  `~/.dsh/memory/lessons.md`.
+
 ## Unreleased — distill pass on the panel
 
 Dhira's verdict on the panel was *"there are too much, too complex at front, should be easy enough

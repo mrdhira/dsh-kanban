@@ -31,8 +31,7 @@ after it, which is why the gate builds first and checks freshness last.
 | `pnpm-lock.yaml` | pnpm writes it; change it only through `pnpm add` / `pnpm install` |
 | `~/.dsh/profiles/desktop/package.json` | the app's composition; `./install.sh` writes it |
 | `~/.dsh/{sessions,cache,storages,attachments,dsh-runtimes,llm-deepseek}`, `.credentials.yaml`, `browser.yml` | app-owned state |
-| `~/.dsh/tasks/board.db` | live board state, not source |
-| `~/.dsh/tasks/todo.md` | a **generated** view of the store; `~/.dsh/scripts/checks/check-board.mjs` fails when it drifts |
+| `~/.dsh/.kanban/board.db` | live board state, not source — the only copy |
 
 Custom plugins are authored in TypeScript and built with esbuild. `src/**` is the source; `lib/**`
 mirrors it file for file; `test/**` imports the built `lib/**`, so **a failed build invalidates the

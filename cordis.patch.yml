@@ -7,8 +7,7 @@
 # with the board at its default path and the default Definition of Workflow.
 #
 #   config:
-#     dbPath: /absolute/path/board.db     # default: $DSH_HOME/tasks/board.db
-#     mirror: true                        # regenerate tasks/todo.md on mutation (default true)
+#     dbPath: /absolute/path/board.db     # default: $DSH_HOME/.kanban/board.db
 #     pollMs: 5000                        # client refresh interval while the panel is visible
 - insert:
     - id: kanban

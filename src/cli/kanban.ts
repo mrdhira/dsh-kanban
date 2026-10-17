@@ -15,8 +15,6 @@
  * these sources into a single executable `bin/kanban.mjs`, so the store it runs is compiled from
  * the same TypeScript the tests and the plugin use — never a copy that can drift.
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
 import {
   ConflictError,
   InvalidError,
@@ -33,9 +31,7 @@ import {
   createSprint,
   createTask,
   defaultBoardPath,
-  defaultMirrorPath,
   getTask,
-  importTodoMd,
   listComments,
   listEvents,
   listSprints,
@@ -47,7 +43,6 @@ import {
   purgeTask,
   readBoardTitle,
   readDow,
-  renderTodoMd,
   setCheck,
   startSprint,
   unblockTask,
@@ -73,7 +68,7 @@ interface Parsed {
   readonly lists: Readonly<Record<string, readonly string[]>>;
 }
 
-const BOOLEAN_FLAGS = new Set(['json', 'force', 'off', 'blocked', 'all', 'help', 'no-mirror']);
+const BOOLEAN_FLAGS = new Set(['json', 'force', 'off', 'blocked', 'all', 'help']);
 const LIST_FLAGS = new Set(['write-scope']);
 
 function parseArgs(argv: readonly string[]): Parsed {
@@ -205,15 +200,11 @@ const USAGE = `dsh-kanban — the Kanban board from the command line
                [--start YYYY-MM-DD] [--end YYYY-MM-DD] [--reason …]
   kanban metrics [--json]
   kanban board [--json]
-  kanban mirror
-  kanban export
-  kanban migrate [--from path]
   kanban where
 
   --db <path>    the board file        (default ${defaultBoardPath()})
   --actor <who>  human | cli | agent:<session-id>   (default human)
   --json         machine-readable output
-  --no-mirror    do not rewrite the generated Markdown after a write
   --write-scope <prefix>  workspace-relative write prefix; repeat for a list.
                           An empty value (--write-scope=) clears the scope on update,
                           the same way an empty --tags clears the tags.
@@ -472,39 +463,6 @@ function commandBoard(parsed: Parsed, board: ReturnType<typeof openBoard>): void
   out(parsed, lines.join('\n'), { dow, views, templates, rev: boardRevision(board), db: board.path });
 }
 
-function renderBoard(board: ReturnType<typeof openBoard>, generatedAt: string): string {
-  const listed = listTasks(board, { limit: 500 });
-  const dow = readDow(board);
-  return renderTodoMd({
-    tasks: listed.tasks,
-    dow,
-    metrics: computeFlowMetrics({ tasks: listed.tasks, now: new Date(generatedAt), dow, boardRev: boardRevision(board) }),
-    boardTitle: readBoardTitle(board),
-    boardRev: boardRevision(board),
-    generatedAt,
-    invalid: listed.invalid,
-    total: listed.total,
-  });
-}
-
-function commandMirror(parsed: Parsed, board: ReturnType<typeof openBoard>, mirrorPath: string, exportOnly: boolean): void {
-  const markdown = renderBoard(board, new Date().toISOString());
-  if (exportOnly) {
-    process.stdout.write(markdown);
-    return;
-  }
-  mkdirSync(dirname(mirrorPath), { recursive: true });
-  writeFileSync(`${mirrorPath}.tmp`, markdown, 'utf8');
-  renameSync(`${mirrorPath}.tmp`, mirrorPath);
-  out(parsed, `wrote ${mirrorPath} (${markdown.length} bytes)`, { wrote: mirrorPath, bytes: markdown.length });
-}
-
-function commandMigrate(parsed: Parsed, board: ReturnType<typeof openBoard>, from: string): void {
-  if (!existsSync(from)) throw new NotFoundError('the markdown file', from);
-  const result = importTodoMd(board, readFileSync(from, 'utf8'), { actor: actorFrom(parsed), now: new Date() });
-  out(parsed, `imported ${result.imported.length} of ${result.rows} row(s); skipped ${result.skipped.length}`, result);
-}
-
 // --------------------------------------------------------------------------- main
 
 function main(): number {
@@ -522,9 +480,7 @@ function main(): number {
   }
 
   const dbPath = flagString(parsed, 'db') ?? defaultBoardPath();
-  const mirrorPath = flagString(parsed, 'mirror') ?? defaultMirrorPath();
   const board = openBoard(dbPath);
-  const revBefore = boardRevision(board);
 
   try {
     switch (parsed.command) {
@@ -548,26 +504,14 @@ function main(): number {
       case 'sprint': commandSprint(parsed, board); break;
       case 'metrics': commandMetrics(parsed, board); break;
       case 'board': commandBoard(parsed, board); break;
-      case 'mirror': commandMirror(parsed, board, mirrorPath, false); break;
-      case 'export': commandMirror(parsed, board, mirrorPath, true); break;
-      case 'migrate': commandMigrate(parsed, board, flagString(parsed, 'from') ?? mirrorPath); break;
       case 'where':
-        out(parsed, `${dbPath}${dbPath === defaultBoardPath() ? '  (default)' : ''} · mirror ${mirrorPath}`, { db: dbPath, mirror: mirrorPath });
+        out(parsed, `${dbPath}${dbPath === defaultBoardPath() ? '  (default)' : ''}`, { db: dbPath });
         break;
       default:
         process.stderr.write(`unknown command ${JSON.stringify(parsed.command)}\n\n${USAGE}\n`);
         return EXIT.usage;
     }
 
-    // Any command that moved the revision also moves the view.
-    //
-    // The server half refreshes the generated Markdown after a mutation; if the CLI did not, a
-    // single `kanban move` from a shell would leave `tasks/todo.md` stale and `check-board.mjs`
-    // would — correctly — report drift. Comparing revisions is how the CLI knows a write happened
-    // without every command having to report it, and it cannot drift out of date as verbs are added.
-    if (parsed.flags['no-mirror'] !== true && boardRevision(board) !== revBefore) {
-      commandMirror(parsed, board, mirrorPath, false);
-    }
     return EXIT.ok;
   } catch (error) {
     if (error instanceof PolicyViolation) {

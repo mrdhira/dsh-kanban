@@ -13,9 +13,9 @@ refuses the human**.
 
 ## Why
 
-Task state used to live in a hand-authored `$DSH_HOME/tasks/todo.md` and in whatever each session
-remembered, and no surface could be trusted to agree with another: nothing enforced a gate, and
-nothing recorded that a move had happened. The figures were the giveaway. An import stamped
+Task state used to live in a hand-authored Markdown table and in whatever each session remembered,
+and no surface could be trusted to agree with another: nothing enforced a gate, and nothing recorded
+that a move had happened. The figures were the giveaway. An import stamped
 `started_at = finished_at = now` on eleven migrated cards, and the generated view advertised
 
 > Throughput 11 in 7 days · Cycle time median 0d · SLE … (history, from 11 finished)
@@ -24,10 +24,10 @@ while the event log held two moves. A board that asserts history it does not hav
 board, because the number is read as evidence.
 
 `dsh-kanban` replaces that with one SQLite store below all three surfaces and one policy engine above
-it. The gates — Definition of Ready, Definition of Done, WIP limits, priority and class of service —
-live in the store; every mutation appends an event; and `tasks/todo.md` became a **generated** view,
-rewritten by every writer and checked for drift by `check-board.mjs`. The four flow metrics are
-recomputed from what happened rather than read off a column.
+it, at `$DSH_HOME/.kanban/board.db`. The gates — Definition of Ready, Definition of Done, WIP limits,
+priority and class of service — live in the store; every mutation appends an event. The store is the
+only copy: the Markdown mirror and the per-card folder tree it once rendered are gone. The four flow
+metrics are recomputed from what happened rather than read off a column.
 
 ## Agent Skills
 
@@ -77,16 +77,15 @@ cd ~/.dsh/profiles/desktop/plugins/dsh-kanban
 
 ### Configure
 
-A fresh install needs **nothing**: the board defaults to `$DSH_HOME/tasks/board.db`, the generated
-view to `$DSH_HOME/tasks/todo.md`, and the Definition of Workflow ships with the guide's limits. The
+A fresh install needs **nothing**: the board defaults to `$DSH_HOME/.kanban/board.db` (its parent is
+created on first open), and the Definition of Workflow ships with the guide's limits. The
 bundle row is created with an empty `config` on purpose — Cordis validates a row's config before the
 plugin activates, and the host half exports no schema to validate against, so it reads every field
 defensively and applies its own defaults.
 
 | setting | default | effect |
 |---|---|---|
-| `dbPath` | `$DSH_HOME/tasks/board.db` | where the board's SQLite file lives |
-| `mirror` | `true` | rewrite `tasks/todo.md` on every mutation |
+| `dbPath` | `$DSH_HOME/.kanban/board.db` | where the board's SQLite file lives |
 | `pollMs` | `5000` | the panel's refresh interval while it is visible |
 
 ```yaml
@@ -95,7 +94,6 @@ defensively and applies its own defaults.
       name: dsh-kanban
       config:
         dbPath: /absolute/path/board.db
-        mirror: true
         pollMs: 5000
 ```
 
@@ -105,16 +103,16 @@ A field the patch does not mention keeps the default above, so declare only what
 
 Three surfaces read and write **one** store through **one** policy engine: a rule enforced in the
 panel is enforced in the tools and the CLI, because there is only one implementation of it. The board
-is `$DSH_HOME/tasks/board.db` (SQLite), and its history is the append-only `events` table — one row
-per mutation. `$DSH_HOME/tasks/todo.md` is a **generated view** of that store; never hand-edit it.
+is `$DSH_HOME/.kanban/board.db` (SQLite), and its history is the append-only `events` table — one row
+per mutation. It is the only copy: no Markdown view and no folder tree, so never hand-edit it.
 
 A profile plugin **cannot import anything but Node builtins** (`@deepseek-ai/*` does not resolve from
 a profile directory). That is why the DSH contracts are vendored in `src/types/dsh.ts`, the store is
 our own SQLite, and the browser half talks to the host over this plugin's own HTTP route rather than a
 typed Remote. `DESIGN.md` is the full design record and `PRODUCT.md` the product brief.
 
-`/api/kanban` serves `health`, `board` (with `?since=<rev>` → `304`), `task/:id`, `export`, and
-`POST mutate` with an op. The route is registered as a prefix on the app's own web server, so it wins
+`/api/kanban` serves `health`, `board` (with `?since=<rev>` → `304`), `task/:id`, and `POST mutate`
+with an op. The route is registered as a prefix on the app's own web server, so it wins
 the longest-prefix match over the app's `/api` bridge and therefore **does not carry that bridge's
 browser-session fence**: a request from this machine is believed, including an
 `x-kanban-actor: human`. The server binds loopback only.
@@ -187,8 +185,8 @@ no sprints, so this is Scrumban and the sprint layer is optional data. The full 
   because a gate that demands a fact no caller can supply is not a gate. The CLI takes the same fact
   as a repeatable `--write-scope` prefix, so a card created or edited from a shell is not gated on a
   field the shell cannot set; `--write-scope=` (an empty value) clears it on `update`, the same way an
-  empty `--tags` clears the tags. A human may still tick the item for a scope recorded elsewhere (the
-  pre-Kanban board, a task folder).
+  empty `--tags` clears the tags. A human may still tick the item for a scope recorded elsewhere on
+  the card (a comment or a link).
 - **Definition of Done** gates `done`; work that does not meet it returns to the backlog.
 - **WIP control**: `in-progress` 2, `review` 1, ready queue 5. `expedite` is the only exception.
 - **Only the human** sets a priority or a class of service, and only the human may except a gate — and

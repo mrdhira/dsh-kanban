@@ -33,8 +33,7 @@ const NOW = new Date('2026-10-15T12:00:00.000Z');
 function tools(board: Board): DshToolDefinition[] {
   return createTools({
     board: () => board,
-    config: () => ({ dbPath: ':memory:', mirrorPath: '/tmp/x.md', mirror: false, pollMs: 5000, importTodoMd: false }),
-    mirror: () => {},
+    config: () => ({ dbPath: ':memory:', pollMs: 5000 }),
   });
 }
 
@@ -389,9 +388,9 @@ test('kanban_board can report the views and templates it seeded', async () => {
 test('kanban_board does not offer the migration, and refuses it if asked anyway', async () => {
   const board = openBoard(':memory:');
   const list = tools(board);
-  // The migration writes rows that bypass every gate, so it is not an agent's action at all — it
-  // is `bin/kanban.mjs migrate`, or the route with a human actor. An action that always refused
-  // would be a trap in the schema, so it is gone from the enum; the handler still ignores it.
+  // The legacy Markdown importer wrote rows that bypassed every gate, so it was never an agent's
+  // action; the importer itself is gone. An action that always refused would be a trap in the
+  // schema, so it is absent from the enum, and the handler ignores it.
   const action = (byName(list, 'kanban_board').parameters as { properties: { action: { enum: string[] } } }).properties.action;
   assert.equal(action.enum.includes('import-todo'), false);
   await call(list, 'kanban_board', { action: 'import-todo', text: '| T-101 | a row | done | — | — | — | — |' });
