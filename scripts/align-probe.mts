@@ -99,6 +99,31 @@
  * once and every state, theme and width is measured inside it, which is what keeps the run inside the
  * cap. Nothing is cached: the bundle, the design-platform CSS, the harness fixture and the page are
  * read fresh on every run.
+ *
+ * ## The report
+ *
+ * `~/.dsh/logs/kanban/align-report.json` is a **summary**, not the finding stream. The full set stays
+ * in memory for the terminal table, which is where a run is read; the file keeps what a later reader
+ * acts on:
+ *
+ * - `summary.totalFindings` — every finding measured, matching the terminal's first count.
+ * - `summary.countsByMetric` — the same total broken down by finding type.
+ * - `summary.actionable` — the number of findings in the file's `findings` array; this is the total
+ *   minus the excluded classes below.
+ * - `summary.excludedByMetric` — the classes kept out of `findings` because they are noise by
+ *   construction. `spread-explained` is the only one, and it is the bulk: it records a row whose
+ *   *declared* alignment is within 1px while a different edge differs, which is what the declaration
+ *   means rather than a defect. The old file carried them, and at ~2.4 MB a run the home memory check
+ *   flagged every measurement.
+ * - `rows` — the per-row measurements, keyed by `state/theme/width`. Each row is a positional array
+ *   described once by `rowFields`; the first field indexes `rowNames`, because the same 75 names
+ *   repeat across every frame. Keeping the names and field names out of every row is what makes the
+ *   summary small.
+ * - `diagnostics` — the computed font and focus per frame, as indices into `panelFonts` and
+ *   `focusStates`; only the values that actually differ are stored.
+ *
+ * The terminal prints both counts (`N findings, M actionable`) so the file's `findings.length` and
+ * `summary.totalFindings` can never silently disagree with what the run said.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, writeFileSync } from 'node:fs';
@@ -1528,6 +1553,60 @@ interface Finding extends PageFinding {
   width: number;
 }
 
+/**
+ * The classes the report keeps out of its `findings` array.
+ *
+ * `spread-explained` is a row whose *declared* alignment is within 1px while a different edge
+ * differs — true of most rows and a statement about what `align-items` means, not a defect. It was
+ * the bulk of a 2.4 MB report, so it is counted and left out.
+ */
+const EXCLUDED_METRICS = new Set(['spread-explained']);
+
+/**
+ * The fields of each positional row in the report's `rows`, in order.
+ *
+ * Positional arrays, with the names written once here, are what keeps the per-row measurements small
+ * enough for the summary: the same object spelled out for every row was most of the old file's size.
+ */
+const REPORT_ROW_FIELDS = [
+  'rowIndex',
+  'align',
+  'count',
+  'lines',
+  'topSpread',
+  'bottomSpread',
+  'centerSpread',
+  'baselineSpread',
+  'heightSpread',
+  'gapSpread',
+  'leadingSlack',
+  'trailingSlack',
+] as const;
+
+function reportRow(row: PageRow, rowIndex: number): readonly (string | number)[] {
+  return [
+    rowIndex,
+    row.align,
+    row.count,
+    row.lines,
+    row.topSpread,
+    row.bottomSpread,
+    row.centerSpread,
+    row.baselineSpread,
+    row.heightSpread,
+    row.gapSpread,
+    row.leadingSlack,
+    row.trailingSlack,
+  ];
+}
+
+/** Count findings per type, most frequent first; the keys are the `metric` strings. */
+function countsByMetric(findings: readonly Finding[]): Record<string, number> {
+  const counts = new Map<string, number>();
+  for (const finding of findings) counts.set(finding.metric, (counts.get(finding.metric) ?? 0) + 1);
+  return Object.fromEntries([...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])));
+}
+
 /** A blunt sort key, so the report can be read worst-first without pretending to be a score. */
 function severity(finding: Finding): number {
   if (finding.metric === 'overlap') return 100 + finding.mag;
@@ -1544,7 +1623,7 @@ function severity(finding: Finding): number {
   return 1 + finding.mag;
 }
 
-async function run(): Promise<Finding[]> {
+async function run(): Promise<{ findings: Finding[]; reportBytes: number }> {
   const styles = readStyles();
   const designCss = readDesignPlatformCss();
   writeFileSync(PAGE_PATH, pageSource(styles, designCss));
@@ -1636,11 +1715,70 @@ async function run(): Promise<Finding[]> {
       }
     }
     findings.sort((a, b) => severity(b) - severity(a));
-    writeFileSync(
-      REPORT_PATH,
-      JSON.stringify({ at: new Date().toISOString(), widths: WIDTHS, states: STATES.map((state) => state.name), findings, rows: Object.fromEntries(rowsByState), diagnostics: Object.fromEntries(diagnostics) }, null, 1)
-    );
-    return findings;
+    const excluded = findings.filter((finding) => EXCLUDED_METRICS.has(finding.metric));
+    const reportable = findings.filter((finding) => !EXCLUDED_METRICS.has(finding.metric));
+    const excludedByMetric = countsByMetric(excluded);
+    for (const metric of EXCLUDED_METRICS) excludedByMetric[metric] ??= 0;
+    const rowNames: string[] = [];
+    const rowNameIndex = new Map<string, number>();
+    const reportRows: Record<string, (string | number)[][]> = {};
+    for (const [key, rows] of rowsByState) {
+      reportRows[key] = rows.map((row) => {
+        let index = rowNameIndex.get(row.name);
+        if (index === undefined) {
+          index = rowNames.length;
+          rowNameIndex.set(row.name, index);
+          rowNames.push(row.name);
+        }
+        return reportRow(row, index);
+      });
+    }
+    const panelFonts: unknown[] = [];
+    const fontIndex = new Map<string, number>();
+    const focusStates: unknown[] = [];
+    const focusIndex = new Map<string, number>();
+    const diagnosticRefs: Record<string, { font: number; focus: number | null }> = {};
+    for (const [key, value] of diagnostics) {
+      const font = JSON.stringify(value.font);
+      if (!fontIndex.has(font)) {
+        fontIndex.set(font, panelFonts.length);
+        panelFonts.push(value.font);
+      }
+      const fontRef = fontIndex.get(font) as number;
+      if (value.focus === null) {
+        diagnosticRefs[key] = { font: fontRef, focus: null };
+        continue;
+      }
+      const focus = JSON.stringify(value.focus);
+      if (!focusIndex.has(focus)) {
+        focusIndex.set(focus, focusStates.length);
+        focusStates.push(value.focus);
+      }
+      diagnosticRefs[key] = { font: fontRef, focus: focusIndex.get(focus) as number };
+    }
+    const report = {
+      at: new Date().toISOString(),
+      widths: WIDTHS,
+      states: STATES.map((state) => state.name),
+      // The counts cover every finding; `findings` below covers only what a reader acts on. Both
+      // numbers are printed, so the file cannot quietly mean a different total than the terminal.
+      summary: {
+        totalFindings: findings.length,
+        actionable: reportable.length,
+        excludedByMetric,
+        countsByMetric: countsByMetric(findings),
+      },
+      rowFields: REPORT_ROW_FIELDS,
+      rowNames,
+      findings: reportable,
+      rows: reportRows,
+      panelFonts,
+      focusStates,
+      diagnostics: diagnosticRefs,
+    };
+    const json = JSON.stringify(report);
+    writeFileSync(REPORT_PATH, json);
+    return { findings, reportBytes: Buffer.byteLength(json) };
   } finally {
     cdp?.close();
     child.kill('SIGKILL');
@@ -1649,14 +1787,15 @@ async function run(): Promise<Finding[]> {
 
 // ------------------------------------------------------------------ main
 
-const findings = await run();
+const { findings, reportBytes } = await run();
 /**
  * The outlier table: one line per (metric, row), worst magnitude first.
  *
  * Grouped rather than listed one finding at a time, because the same disagreement repeats across 12
  * states, 2 themes and 3 widths — 1792 rows of it in the first full run. A table of 28 groups says
- * what is wrong; a table of 1792 says the same thing 64 times. The per-state lines printed during the
- * run, and the JSON beside them, keep the ungrouped record.
+ * what is wrong; a table of 1792 says the same thing 64 times. This table is the run's ungrouped
+ * record; the report beside it keeps the actionable subset and the counts for every type, not the
+ * `spread-explained` stream.
  */
 const groups = new Map<string, { metric: string; row: string; count: number; mag: number; detail: string; states: Set<string>; widths: Set<string>; themes: Set<string> }>();
 for (const finding of findings) {
@@ -1673,7 +1812,12 @@ for (const finding of findings) {
   groups.set(key, entry);
 }
 const table = [...groups.values()].sort((a, b) => b.mag - a.mag);
+const actionable = findings.filter((finding) => !EXCLUDED_METRICS.has(finding.metric)).length;
 console.log(`\n${String(findings.length)} findings in ${String(table.length)} groups, worst first:`);
+console.log(
+  `  ${String(actionable)} actionable, ${String(findings.length - actionable)} spread-explained` +
+    ` (kept out of the report's findings; both counts are in its summary)`
+);
 console.log('metric | row | measured | states x themes x widths | what disagrees');
 for (const entry of table) {
   console.log(
@@ -1682,5 +1826,5 @@ for (const entry of table) {
       `          ${entry.detail}`
   );
 }
-console.log(`\nfull report: ${REPORT_PATH}`);
+console.log(`\nsummary report: ${REPORT_PATH} (${(reportBytes / 1024).toFixed(0)} KB)`);
 process.exit(0);
