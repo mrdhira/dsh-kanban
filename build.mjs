@@ -11,7 +11,7 @@
  * stay external, which is also what the client bundle-purity gate requires.
  */
 import { build } from 'esbuild';
-import { chmodSync as chmod, readFileSync, readdirSync } from 'node:fs';
+import { chmodSync as chmod, readFileSync, readdirSync, rmSync} from 'node:fs';
 import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
@@ -19,6 +19,11 @@ import { dirname, join } from 'node:path';
 const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
 const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '');
 const buildId = `${pkg.name}/${pkg.version}+${stamp}`;
+
+// The output tree is generated, so clear it before building: a module deleted from src must
+// disappear from lib, or a fresh clone ships dead code. Stale per-module artifacts have
+// fooled this suite before, which is why the host half is emitted per module at all.
+rmSync('lib/v1', { recursive: true, force: true });
 
 const shared = {
   bundle: true,
