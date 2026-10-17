@@ -1,0 +1,14 @@
+# One line ending everywhere: `text=auto` normalises on the way in and `eol=lf` writes LF out, so a
+# clone on any platform gets the same bytes.
+* text=auto eol=lf
+
+# A CRLF in a shebang makes the script unrunnable, and on macOS that failure is silent until the
+# script is needed.
+*.sh text eol=lf
+
+# Screenshots are committed evidence for the README; never let git rewrite their bytes.
+*.png binary
+
+# Generated, and large in a diff: collapse it rather than reviewing it.
+pnpm-lock.yaml -diff linguist-generated
+lib/**         linguist-generated

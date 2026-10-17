@@ -43,6 +43,7 @@
   "scripts": {
     "guard": "node scripts/guard.mjs",
     "build": "node build.mjs",
+    "prepare": "node build.mjs",
     "typecheck": "node scripts/typecheck.mjs",
     "test": "node scripts/guard.mjs --limit-mb 1024 -- node --max-old-space-size=384 --test --test-isolation=none --test-timeout=20000 --test-force-exit \"test/*.test.ts\"",
     "pretest": "npm run build"

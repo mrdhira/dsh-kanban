@@ -1,0 +1,25 @@
+# <type>: <imperative summary, <= 72 chars>
+#
+# Types: feat | fix | refactor | perf | test | docs | build | ci | chore | release
+#
+# Why, not what -- the diff already shows what. Explain the reasoning a reader cannot recover from
+# the code, and name the evidence:
+#
+#   Evidence: gate PASS (build clean; typecheck 0 errors; freshness ok).
+#
+# One blank line between the summary and the body.
+#
+# This repository credits exactly one author, Dhira Wigata <dwigata.putra@gmail.com>.
+#
+#   - No Co-authored-by, Co-developed-by, Generated-by or Assisted-by trailer.
+#   - No "Generated with ..." byline or footer, and no robot emoji credit line.
+#   - Agents assist; they do not author. Work an agent did is described in the body as prose, which
+#     is honest and needs no trailer.
+#   - Signed-off-by is allowed: it is Dhira's own `git commit -s` sign-off, not a second author.
+#
+# The rule applies to the subject and the body alike, and CI checks the whole history -- not just
+# this commit -- for a single identity and for authorship trailers.
+#
+# Set the identity repo-locally before the first commit, never globally:
+#   git config --local user.name  "Dhira Wigata"
+#   git config --local user.email "dwigata.putra@gmail.com"
