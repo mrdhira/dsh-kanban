@@ -141,8 +141,19 @@ export function filterCards(tasks: readonly Task[], filter: ViewFilter): Task[] 
  */
 export function columnsOf(payload: BoardPayload, filter: ViewFilter = EMPTY_FILTER): Column[] {
   const tasks = filterCards(payload.tasks, filter);
+  // One walk of the filtered cards into buckets, not one walk per lane. The old shape ran
+  // `tasks.filter(state === …)` six times per render — six full passes over the same array — because
+  // every lane asked the same question of the same list. The host's own truncation caps the list, so
+  // this is small either way; it is here because the lane count is a fixed six and the passes were
+  // not, and because the result is identical card for card.
+  const buckets = new Map<State, Task[]>();
+  for (const task of tasks) {
+    const bucket = buckets.get(task.state);
+    if (bucket === undefined) buckets.set(task.state, [task]);
+    else bucket.push(task);
+  }
   return STATES.map((state) => {
-    const cards = tasks.filter((task) => task.state === state).sort(compareInColumn);
+    const cards = (buckets.get(state) ?? []).sort(compareInColumn);
     const limit = limitFor(state, payload.dow);
     return {
       state,

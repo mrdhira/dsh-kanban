@@ -184,6 +184,11 @@ function NoticeStrip(props: ChildProps): ReactElement | null {
     notice.missing === undefined || notice.missing.length === 0
       ? null
       : React.createElement('span', { className: 'kb-notice-missing' }, `missing: ${notice.missing.join(', ')}`),
+    // The strip's only control sits at the content edge, not 486.09px short of it. A `.kb-spacer`
+    // here is the device the header already uses for the same job, and it is why the Dismiss button
+    // lands on the row's right edge rather than wherever the sentence happened to end. The row is
+    // centre-aligned now, so a two-line message no longer leaves the button riding the first baseline.
+    React.createElement('span', { className: 'kb-spacer' }),
     // Nothing else here: a refusal is answered by editing the thing it named and the control that sent
     // it is still on screen, and a notice-level failure already has a recovery on the panel — the
     // header's `Refresh`. A second button beside `Dismiss` that did the same thing would be surface
@@ -202,7 +207,25 @@ interface MetricsProps extends ChildProps {
 function MetricsStrip(props: MetricsProps): ReactElement | null {
   const { React, state, open, onToggle, hostOpen, onToggleHost } = props;
   const payload = state.payload;
-  if (payload === null) return null;
+  /**
+   * The strip's **box** is on the page before its facts are, and it holds no facts.
+   *
+   * It is payload-gated by content — the numbers arrive with the board — but it must not be
+   * payload-gated by *existence*: while the first read is in flight it was the one page child that
+   * was absent rather than empty, so the lane row beneath it painted 34.00px higher and settled when
+   * the payload landed (measured: lanes at top 94.78 while loading against 128.78 loaded). An empty
+   * strip of the same height removes the shift without inventing a number: no lead, no disclosure,
+   * no `0/0` from a Definition of Workflow this file has not been given. `.kb-metrics` carries the
+   * reserved height, and the accessible name says what the empty box is waiting for.
+   */
+  if (payload === null) {
+    return React.createElement('div', {
+      className: 'kb-metrics',
+      role: 'group',
+      'aria-label': 'Flow metrics',
+      'data-metrics': 'pending',
+    });
+  }
   const metrics = payload.metrics;
   const num = (value: number | null): string => (value === null ? '—' : String(value));
   // Two numbers at the front: how full the WIP control is, and how the oldest card reads against
@@ -322,8 +345,8 @@ function CardView(props: CardProps): ReactElement {
   if (task.classOfService === 'expedite') classes.push('kb-card-expedite');
   if (task.blockedReason !== null) classes.push('kb-card-blocked');
   // A dropped card says so by its whole card: dim, and beside the drawn tick, the one state that is
-  // neither a warning nor a verdict. Since the view row was removed it is simply the last lane on the
-  // board, so a dropped card is on screen without anyone asking for it.
+  // neither a warning nor a verdict. When the view row was removed it became simply the last lane on
+  // the board, so a dropped card is on screen without anyone asking for it.
   if (task.state === 'dropped') classes.push('kb-card-dropped');
   // The top row holds the id, the priority code and the age inside a 236px lane, so it keeps the
   // numbers and the words move down to the chip row, which wraps without breaking a token. The words
@@ -637,8 +660,18 @@ function Drawer(props: DrawerProps): ReactElement {
    * snapshot once made that path a no-op: the store recorded the stage and the drawer never noticed.
    * The store is the single source for this fact, so the drawer subscribes to it rather than copying
    * it into component state.
+   *
+   * **A card already in `dropped` has nothing staged**, whatever the store still holds: `state.stagedDrop`
+   * is only ever cleared by `select(null)` (`store.ts`), so after the confirmed `store.drop` lands, the
+   * record of the gesture that asked for it outlives the move. Read raw, the drawer of a card that had
+   * just arrived in `dropped` kept its `data-staged="dropped"`, its tint, its "write it here" note and a
+   * **live Drop button for a card already in Dropped**. The guard is the card's own state, which is the
+   * fact the store cannot get wrong: a drop that has landed cannot be staged a second time.
    */
-  const staged = state.stagedDrop !== null && state.stagedDrop.taskId === task.id ? state.stagedDrop : null;
+  const staged =
+    state.stagedDrop !== null && state.stagedDrop.taskId === task.id && task.state !== 'dropped'
+      ? state.stagedDrop
+      : null;
   const detail = state.detail;
   const events = detail?.events ?? [];
   const comments = detail?.comments ?? [];
@@ -675,19 +708,25 @@ function Drawer(props: DrawerProps): ReactElement {
   }, [staged]);
 
   /**
-   * A pointer-staged drop puts the keyboard in the reason field.
+   * A staged drop puts the keyboard in the reason field, whichever gesture staged it.
    *
    * A drag has no keyboard place to preserve, and the one thing the gesture is asking for is the
    * reason — so the field takes focus, or the human is told to write something they must go looking
-   * for. The keyboard path (`Alt+→` into Dropped) keeps the drawer's own focus instead: a keyboard
-   * user asked for the card, not for a text box, and `Space`/`Enter` on the field's own button is
-   * where that path confirms. Nothing is claimed about `:focus-visible` here: a real text input
-   * paints its ring for a programmatic focus in every browser this panel ships in.
+   * for. The drawer's own `Move … to Dropped` button is the same request made with a **click**, and it
+   * used to pass `'keyboard'` regardless of device, so the click staged the group and left the field
+   * unfocused while the store's promise said otherwise. The condition is now the staged fact itself
+   * and the field's presence: the group lives inside the `More moves…` fold, which the effect above
+   * opens on the same staged fact, so the field mounts on the commit *after* the one that recorded the
+   * stage — and the dependency on `moreOpen` is what lets this effect run again when it appears. The
+   * `Alt+→` path stages the same way, and a field that has just appeared is exactly where the keyboard
+   * should be — `Space` or `Enter` on its own button confirms from there. Nothing is claimed about
+   * `:focus-visible` here: a real text input paints its ring for a programmatic focus in every browser
+   * this panel ships in.
    */
   React.useEffect(() => {
-    if (staged === null || staged.via !== 'pointer' || !moreOpen) return;
+    if (staged === null) return;
     dropRef.current?.focus();
-  }, [moreOpen]);
+  }, [staged, moreOpen]);
 
   // The card's position can move under the drawer (a drop, or another operator's poll). The field
   // follows it rather than holding a number the human would be editing blind.
@@ -1001,10 +1040,19 @@ function Drawer(props: DrawerProps): ReactElement {
                 )
               )
             ),
-            // The destructive zone, kept apart from the reversible moves above it.
+            // The destructive zone, kept apart from the reversible moves above it. It is a **named
+            // group**: the tinted, note-bearing staged area is the one box on the panel that has to be
+            // understood as a unit — the rule, the reason and the one control that confirms it — and a
+            // name on a role-less div is inert (ARIA 1.2), which is why the lanes, the drawers, the
+            // checklists and the metrics strip all carry their role. The name states the rule rather
+            // than the label above it, because the rule is what the group is for.
             React.createElement(
               'div',
-              { className: `kb-group kb-group-danger${staged === null ? '' : ' kb-staged'}` },
+              {
+                className: `kb-group kb-group-danger${staged === null ? '' : ' kb-staged'}`,
+                role: 'group',
+                'aria-label': 'Dropped, needs a written reason to confirm',
+              },
               React.createElement('span', { className: 'kb-dim' }, 'drop'),
               // Why the gesture that opened this drawer is asking rather than doing. It is rendered
               // only when a drop is staged, and the reason field points at it, so a reader who lands
@@ -1278,11 +1326,18 @@ export function BoardPage(props: BoardProps): ReactElement {
       // lie this board exists to avoid. **The revision is not here**: `rev 7` is developer vocabulary
       // on the operator's front line, so it travels with the host line behind the `Host` disclosure in
       // the metrics strip.
+      //
+      // Three pending/absent readings, and they are three different facts. `connecting…` is the first
+      // read still in flight. A board that has **failed** is not connecting: the error notice beneath
+      // names the failure, so a header that still said `connecting…` contradicted the strip on the same
+      // screen — it says `unavailable` instead. Anything else is a count.
       React.createElement(
         'span',
         { className: 'kb-sub' },
         state.payload === null
-          ? 'connecting…'
+          ? state.status === 'error'
+            ? 'unavailable'
+            : 'connecting…'
           : shown !== total
             ? `showing ${shown} of ${total} cards`
             : `${total} cards`

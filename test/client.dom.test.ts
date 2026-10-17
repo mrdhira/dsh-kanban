@@ -739,9 +739,15 @@ test('D7: the keyboard path into Dropped stages the same drawer rather than send
   assert.equal(view.has('[data-drawer="T-005"]'), true, 'the drawer opens for the card');
   assert.equal(view.find('[data-drawer="T-005"]')?.getAttribute('data-staged'), 'dropped', 'with the drop staged');
   assert.equal(view.has('[data-drawer="T-005"] [data-field="drop-reason"]'), true, 'and the reason field is there to take it');
-  // The keyboard user asked for the card, not for a text box, so focus stays on the drawer the
-  // keyboard path put it in; `Tab` reaches the field from there like any other control in the region.
-  assert.equal(view.isFocused('[data-drawer="T-005"]'), true, 'the keyboard keeps its own place in the drawer');
+  // The keyboard asked for the card, and the *panel* opens the field the rule needs: a staged drop
+  // always puts the keyboard in the reason field now, whichever device staged it. This read the
+  // opposite before (item 10): `Alt+→` landed on the drawer and left the field alone, while the store's
+  // own doc promised the field was where the reason is written.
+  assert.equal(
+    view.isFocused('[data-drawer="T-005"] [data-field="drop-reason"]'),
+    true,
+    'the staged reason field takes the keyboard on this path too'
+  );
   view.unmount();
 });
 
@@ -1239,12 +1245,20 @@ test('P3.8: pressed and open share one treatment, and the open state carries a s
   view.unmount();
 });
 
-test('P3.10: the disclosure toggle is at least as tall as a button', () => {
+test('P3.10: one control height for a row, so a button and an input agree', () => {
   const styles = readFileSync(new URL('../src/client/styles.ts', import.meta.url), 'utf8');
-  // The floor is shared, so the smallest control by type is not the smallest by target. 3px + 13px x
-  // 1.4 + 3px + 2px of border is 24px, which is the number in the rule.
-  assert.match(styles, /\.kb-btn \{[^}]*min-height: 24px/);
-  assert.match(styles, /\.kb-more \{ display: inline-flex; align-items: center; gap: 4px; padding: 1px 7px; font-size: 12px; \}/);
+  // Measured before this rule: a button at 30.39px beside an input at 26.00px in the same bar (210
+  // control-height findings over 7 distinct rows). The old `min-height: 24px` was a floor and never a
+  // cap, so it passed while the controls disagreed; one height on both is what makes them agree.
+  assert.match(styles, /--kb-control-height: 26px/, 'one control height, declared once');
+  assert.match(styles, /\.kb-btn \{[^}]*height: var\(--kb-control-height, 26px\)/, 'the button takes it');
+  assert.match(styles, /\.kb-input \{[^}]*height: var\(--kb-control-height, 26px\)/, 'and so does the input');
+  assert.match(styles, /\.kb-btn \{[^}]*box-sizing: border-box/, 'border-box, or the height is not the box');
+  assert.match(styles, /\.kb-input \{[^}]*box-sizing: border-box/);
+  // One inset in one bar: the button, the input and the disclosure all pad 8px on the left.
+  assert.match(styles, /\.kb-btn \{[^}]*padding: 3px 8px/);
+  assert.match(styles, /\.kb-input \{[^}]*padding: 3px 8px/);
+  assert.match(styles, /\.kb-more \{ display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; font-size: 12px; \}/);
   assert.match(styles, /\.kb-more-caret \{ flex: 0 0 auto/);
 });
 
@@ -1350,8 +1364,21 @@ test('a forced move to the same state still needs its reason, as the host requir
 });
 
 test('the stylesheet is injected once under its id, and removed with the panel', async () => {
-  const first = await mountBoard(loadBundle());
   const styleId = 'dsh-kanban-styles';
+  /**
+   * Start from **one** sheet, this mount's.
+   *
+   * The sheet is document-wide state and the harness runs every case in one jsdom realm, so an
+   * earlier case that threw before its `unmount()` leaves its own style node behind — and this case
+   * then reads two and blames the panel. That is exactly what happened when the align pass's new
+   * cases failed against the pre-fix bundle: the panel was correct and the *report* was noise. An
+   * orphan cannot be told from a live sheet by the document, so this case takes responsibility for
+   * the realm it is given: it clears what no mount owns, and the panel's own two mounts are still
+   * the only thing that can put a sheet there afterwards.
+   */
+  for (const stale of [...document.querySelectorAll(`style#${styleId}`)]) stale.remove();
+
+  const first = await mountBoard(loadBundle());
   assert.equal(document.querySelectorAll(`style#${styleId}`).length, 1, 'one sheet, not one per render');
 
   // Re-render (as a poll does) and the sheet is still one node: it is not part of the element tree.
@@ -2423,18 +2450,274 @@ test('F21: the drawer’s two bare ellipses now name what they do', async () => 
   view.unmount();
 });
 
-test('no label is turned on its side, and a parked lane is an outlined slot on one line', async () => {
+// ------------------------------------------------------------------ the align fix pass (items 1-15)
+
+/** The `.kb-page` rule's own text, so a declaration can be read without a layout engine. */
+function pageRule(styles: string): string {
+  const match = /\.kb-page \{([^}]*)\}/.exec(styles);
+  assert.ok(match !== null, 'the page rule is declared');
+  return match[1] as string;
+}
+
+test('A1: the base type is three declarations, because the font shorthand dropped the whole rule', () => {
   const styles = readFileSync(new URL('../src/client/styles.ts', import.meta.url), 'utf8');
+  // The defect: `font: 13px/1.5 inherit` — a family component in the `font` shorthand must be a
+  // family, and `inherit` is not one, so the browser dropped the declaration and the panel rendered
+  // at the app body's 16px. Measured across all 84 probe states: font-size 16px, bodySize 16px.
+  // What is asserted here is the shape that made it droppable, not the pixel: the size and the
+  // leading are their own declarations, and no `font:` shorthand carries `inherit` as a *family*
+  // (a bare `font: inherit` is a legal global value and is left alone). No 13px assertion is made
+  // against the source: the number that matters is the computed one, and the probe is what reads it.
+  const shorthand = [...styles.matchAll(/(?:^|[\s;])font:\s*([^;}]+)/g)]
+    .map((match) => (match[1] as string).trim())
+    .filter((value) => value !== 'inherit' && value.includes('inherit'));
+  assert.deepEqual(
+    shorthand,
+    [],
+    'no font shorthand carries inherit as a family, which is invalid CSS and drops the declaration'
+  );
+  const page = pageRule(styles);
+  assert.match(page, /font-size: 13px/, 'the 13px base is declared on the panel itself');
+  assert.match(page, /line-height: 1\.5/);
+  assert.equal(/font-family:/.test(page), false, 'and the family is still inherited, not authored');
+});
+
+test('A2: the lane keeps its 236px basis because min-width is 0, and the token breaks inside the card', () => {
+  const styles = readFileSync(new URL('../src/client/styles.ts', import.meta.url), 'utf8');
+  // `flex: 0 0 236px` is a flex base size, not a cap: the automatic minimum size (min-content) wins
+  // unless it is told not to, so one unbreakable token set the lane to 603.03px in every state, theme
+  // and width (66 findings). The declaration is the guard; the number it produces is the probe's.
+  assert.match(styles, /\.kb-lane \{[^}]*min-width: 0/, 'the basis can actually win');
+  assert.match(styles, /\.kb-lane \{[^}]*flex: 0 0 var\(--kb-lane-width, 236px\)/, 'and it is still 236px');
+  assert.match(styles, /\.kb-card-title \{[^}]*overflow-wrap: break-word/, 'the token breaks inside 196px instead of pushing the lane');
+});
+
+test('A3: the drawer form rows take the drawer width, so no control floats short of the edge', () => {
+  const styles = readFileSync(new URL('../src/client/styles.ts', import.meta.url), 'utf8');
+  // Measured before: the comment field was 140px in a 927px row, and every drawer bar's last control
+  // stopped 486-756px short of the row's right content edge (88 findings over 6 states). The fields
+  // grow to the row's width; the toolbar and the metrics strip keep their spacer-led layout.
+  assert.match(
+    styles,
+    /\.kb-drawer \.kb-bar > input\.kb-input,[\s\S]*?\.kb-drawer \.kb-bar > select\.kb-input \{ flex: 1 1 auto; \}/,
+    'a drawer field grows; nothing outside the drawer does'
+  );
+});
+
+test('A4: the notice is centre-aligned and its Dismiss sits at the row edge', async () => {
+  const styles = readFileSync(new URL('../src/client/styles.ts', import.meta.url), 'utf8');
+  // Measured before: the strip's only button stopped 486.09px short of the content edge, at 45% of a
+  // 968px row, and a two-line message left it riding the first line's baseline (top spread 4.19px).
+  assert.match(styles, /\.kb-notice \{[^}]*align-items: center/, 'centre, not baseline');
+  assert.match(styles, /\.kb-notice > span:first-child \{ flex: 1 1 auto; \}/, 'the message takes the free width');
+
+  // The error branch is the deterministic route to a rendered notice: the strip's own message is a
+  // bare text node there, so the browser's anonymous flex item is the grower and the button is the
+  // last element child the slack is measured against.
+  const loaded = loadBundle();
+  setFetch((call) => {
+    if (call.url.includes('/board')) throw new Error('network down');
+    return { status: 200, body: { ok: true, result: {} } };
+  });
+  const view = mount(loaded, loaded.slot('main'), { store: freshStore(loaded) });
+  await flush();
+  const notice = view.find('.kb-notice-error');
+  assert.ok(notice !== null, 'the strip renders');
+  const elements = [...notice.children];
+  assert.equal(elements[elements.length - 1]?.textContent, 'Retry', 'its one control is the last element child');
+  view.unmount();
+});
+
+test('A7: a failed board says unavailable, not connecting', async () => {
+  const loaded = loadBundle();
+  setFetch((call) => {
+    if (call.url.includes('/board')) throw new Error('network down');
+    return { status: 200, body: { ok: true, result: {} } };
+  });
+  const view = mount(loaded, loaded.slot('main'), { store: freshStore(loaded) });
+  await flush();
+  // Pre-fix this read `connecting…` while the error notice on the same screen said `board
+  // unavailable`: the header contradicted the strip directly beneath it.
+  assert.equal(view.find('.kb-sub')?.textContent, 'unavailable', 'the header names the state it is in');
+  assert.equal(view.has('.kb-notice-error'), true, 'and the notice still carries the diagnosis');
+  view.unmount();
+});
+
+test('A8: the metrics strip holds its own box before it has any facts', async () => {
+  const styles = readFileSync(new URL('../src/client/styles.ts', import.meta.url), 'utf8');
+  // Payload-gated, the strip was the one page child absent rather than empty during the first read, so
+  // the board beneath it painted 34.00px higher and settled (lanes at top 94.78 while loading against
+  // 128.78 loaded). The reservation is its own one-line box at the shared control height.
+  assert.match(styles, /\.kb-metrics \{[^}]*min-height: var\(--kb-control-height, 26px\)/, 'the strip holds its own box');
+
+  // The box is on the page while the read is in flight, and it holds **no invented fact**: no lead,
+  // no disclosure, no `0/0` from a Definition of Workflow this file has not been given.
+  const loaded = loadBundle();
+  setFetch((() => neverAnsweringReply()) as never);
+  const view = mount(loaded, loaded.slot('main'), { store: freshStore(loaded) });
+  await flush();
+  const strip = view.find('.kb-metrics');
+  assert.ok(strip !== null, 'the strip is on the page before its payload is');
+  assert.equal(strip.getAttribute('role'), 'group', 'and it is a named group, as it is when loaded');
+  assert.equal(strip.getAttribute('data-metrics'), 'pending');
+  assert.equal(strip.textContent, '', 'with nothing printed into it');
+  assert.equal(view.find('[data-action="more-metrics"]'), null, 'and no disclosure it cannot fill');
+  view.unmount();
+});
+
+test('A9: a confirmed drop leaves no stage behind it', async () => {
+  // The defect, reproduced: `staged` was derived from `state.stagedDrop` alone, and nothing clears
+  // that record on success — only `select(null)` does (`store.ts`). So after the confirmed drop landed,
+  // the drawer of the card now sitting in Dropped kept its `data-staged="dropped"`, its tint, its
+  // "write it here" note and a **live Drop button for a card already in Dropped**.
+  const payload = fixture();
+  let boardReads = 0;
+  setFetch((call) => {
+    if (call.url.includes('/board')) {
+      boardReads += 1;
+      return boardReads === 1
+        ? { status: 200, body: { ok: true, board: payload, rev: payload.rev } }
+        : { status: 304, body: undefined };
+    }
+    if (call.url.includes('/mutate')) return { status: 200, body: { ok: true, rev: 8, result: {} } };
+    if (call.url.includes('/task/')) return { status: 200, body: { ok: true, task: null, comments: [], events: [] } };
+    return { status: 404, body: {} };
+  });
+  const view = mount(loadBundle(), loadBundle().slot('main'), { store: freshStore(loadBundle()) });
+  await flush();
+
+  await view.drag('[data-card="T-002"]', '[data-lane="dropped"]', 5);
+  await flush();
+  assert.equal(view.find('[data-drawer="T-002"]')?.getAttribute('data-staged'), 'dropped', 'the gesture stages');
+  await view.type('[data-drawer="T-002"] [data-field="drop-reason"]', 'superseded by T-004');
+  await flush();
+  await view.click('[data-drawer="T-002"] [data-action="drop"]');
+  await flush();
+
+  assert.equal(view.has('[data-lane="dropped"] [data-card="T-002"]'), true, 'the card landed in Dropped');
+  // Pre-fix every one of these read the staged value: the attribute, the tint class and the note.
+  assert.equal(view.find('[data-drawer="T-002"]')?.getAttribute('data-staged'), null, 'the stage is gone');
+  assert.equal(
+    view.find('[data-drawer="T-002"] .kb-group-danger')?.className.includes('kb-staged'),
+    false,
+    'so is the tint'
+  );
+  assert.equal(view.has('[data-drawer="T-002"] [id="stage-drop-note"]'), false, 'and the write-it-here note');
+  view.unmount();
+});
+
+test('A10: the drawer’s own Move to Dropped leaves the keyboard in the reason field', async () => {
+  // The click path passes no device, and the old effect required `staged.via === 'pointer'` plus an
+  // already-open `moreOpen`, so a click staged the group and focused nothing. The field is the one
+  // thing the gesture is asking for, so it takes the keyboard on either path.
+  const view = await mountBoard(loadBundle());
+  await view.click('[data-card="T-005"]');
+  await flush();
+  await view.click('[data-action="more"]');
+  await flush();
+  await view.click('[aria-label="Move T-005 to Dropped"]');
+  await flush();
+  assert.equal(view.find('[data-drawer="T-005"]')?.getAttribute('data-staged'), 'dropped', 'the click stages it');
+  assert.equal(
+    view.isFocused('[data-drawer="T-005"] [data-field="drop-reason"]'),
+    true,
+    'and the field the rule needs takes the keyboard'
+  );
+  view.unmount();
+});
+
+test('A11: the drop group is a named group, so its rule is announced with it', async () => {
+  // `.kb-group` is a bare flex box; the tinted, note-bearing staged area had no role and no name,
+  // while every lane, checklist and the drawer are named. A name on a role-less div is inert.
+  const view = await mountBoard(loadBundle());
+  await view.click('[data-card="T-005"]');
+  await flush();
+  await view.click('[data-action="more"]');
+  await flush();
+  await view.click('[aria-label="Move T-005 to Dropped"]');
+  await flush();
+  const group = view.find('[data-drawer="T-005"] .kb-group-danger.kb-staged');
+  assert.ok(group !== null, 'the staged group is on screen');
+  assert.equal(group.getAttribute('role'), 'group', 'it carries a role that may hold a name');
+  assert.match(group.getAttribute('aria-label') ?? '', /written reason/, 'and the name states the rule');
+  view.unmount();
+});
+
+test('A12: the reason field has one name, and the rule as its description', async () => {
+  const view = await mountBoard(loadBundle());
+  await view.click('[data-card="T-005"]');
+  await flush();
+  await view.click('[data-action="more"]');
+  await flush();
+  await view.click('[aria-label="Move T-005 to Dropped"]');
+  await flush();
+  const field = view.find('[data-drawer="T-005"] [data-field="drop-reason"]');
+  assert.ok(field !== null, 'the reason field is mounted');
+  // The placeholder stays as the visible hint it is; the accessible name is one name, and the rule
+  // that the field cannot carry alone arrives as the description rather than as a second label.
+  assert.equal(field.getAttribute('placeholder'), 'reason to drop…');
+  assert.equal(field.getAttribute('aria-label'), 'Reason to drop');
+  const described = field.getAttribute('aria-describedby');
+  assert.equal(described, 'stage-drop-note', 'one description, and it is the rule');
+  assert.equal(view.find(`[id="${String(described)}"]`)?.textContent?.includes('confirmed move carrying a reason'), true);
+  view.unmount();
+});
+
+test('A14: the slot and the awake lane are one orientation, and the duplicated padding is gone', () => {
+  const styles = readFileSync(new URL('../src/client/styles.ts', import.meta.url), 'utf8');
+  // The header was a row in both states already; items 6 and 14 are the declaration half of that.
+  assert.match(styles, /\.kb-lane-empty \{ flex: 0 0 auto; align-items: stretch; border-style: dashed; \}/);
+  assert.match(styles, /\.kb-lane-awake \{ flex: 0 0 var\(--kb-lane-width, 236px\); align-items: stretch; \}/);
+  assert.equal(/\.kb-lane-empty \{[^}]*padding:/.test(styles), false, 'the slot takes the lane\'s own 9px padding');
+  assert.equal(/\.kb-lane-awake \{[^}]*padding:/.test(styles), false);
+  assert.equal(/writing-mode/.test(styles.replace(/\/\*[\s\S]*?\*\//g, '')), false, 'no writing mode is restated or set');
+  assert.match(styles, /\.kb-lane-empty \.kb-lane-head \{ flex-direction: row; \}/);
+  assert.match(styles, /\.kb-lane-awake \.kb-lane-head \{ flex-direction: row; \}/);
+});
+
+test('A15: the card meta row and a dropped card use the declared role fallback', () => {
+  const styles = readFileSync(new URL('../src/client/styles.ts', import.meta.url), 'utf8');
+  // They were the last two consumers of a bare `inherit` fallback, which is not a role: with no
+  // token the de-emphasis vanished instead of degrading to the sheet's own secondary literal.
+  assert.match(styles, /\.kb-card-meta \{[^}]*color: var\(--dsw-alias-label-secondary, var\(--kb-label-secondary\)\)/);
+  assert.match(styles, /\.kb-card-dropped \{ color: var\(--dsw-alias-label-secondary, var\(--kb-label-secondary\)\); \}/);
+});
+
+test('A17: bucketing the cards once gives every lane the same answer as six walks', () => {
+  // Same input, same columns, card for card and order for order; the change is one walk instead of
+  // one per lane. A search filter runs through it too, so the bucketing cannot hide a card.
+  const payload = boardPayload() as unknown as Parameters<typeof columnsOf>[0];
+  const all = columnsOf(payload);
+  const searched = columnsOf(payload, { search: 'card T-00' });
+  const states = all.map((column) => column.state);
+  assert.deepEqual(states, ['backlog', 'ready', 'in-progress', 'review', 'done', 'dropped']);
+  const drawn = all.flatMap((column) => column.cards.map((card) => card.id));
+  const expected = (payload.tasks as readonly { id: string }[]).map((task) => task.id);
+  assert.deepEqual([...drawn].sort(), [...expected].sort(), 'every card is in exactly one lane');
+  assert.deepEqual(
+    searched.flatMap((column) => column.cards.map((card) => card.id)).sort(),
+    ['T-001', 'T-002', 'T-003', 'T-004', 'T-005'],
+    'the filter still narrows cards, not lanes'
+  );
+  assert.deepEqual(all.map((column) => column.cards.length), [1, 1, 2, 0, 1, 0]);
+});
+
+test('no label is turned on its side, and a parked lane is an outlined slot on one line', async () => {  const styles = readFileSync(new URL('../src/client/styles.ts', import.meta.url), 'utf8');
   // The parked lane's name used to be rotated 90 degrees. A sideways word reads as a sliver rather than
   // a column, and the name is the one thing the parked lane still communicated. Forbid the pattern
   // rather than the instance: no rule may turn text vertical, whatever selector does it.
   // Every appearance, not just the ones spelled "vertical": sideways-lr and sideways-rl turn text too,
-  // and a guard that names two of four spellings is a guard that gets walked around.
-  const modes = [...styles.matchAll(/writing-mode:\s*([^;}\s]+)/g)].map((match) => (match[1] as string));
+  // and a guard that names two of four spellings is a guard that gets walked around. The fix pass
+  // removed the last declaration (`.kb-lane-awake`'s restatement of the initial `horizontal-tb`), so
+  // the honest reading of the same rule is now **none at all**: a sheet that declares no writing mode
+  // cannot turn a label on its side. Comments are stripped first, because a comment that *names* the
+  // mode is documentation, not a declaration, and matching it would make this guard fire on prose.
+  const declarations = styles.replace(/\/\*[\s\S]*?\*\//g, '');
+  const modes = [...declarations.matchAll(/writing-mode:\s*([^;}\s]+)/g)].map((match) => (match[1] as string));
   assert.deepEqual(
     [...new Set(modes)],
-    ['horizontal-tb'],
-    'the only writing mode in the sheet is horizontal',
+    [],
+    'the sheet declares no writing mode, so no rule turns text vertical',
   );
   assert.match(styles, /\.kb-lane-empty \{[^}]*border-style: dashed/, 'the parked lane is outlined as a slot');
   assert.equal(

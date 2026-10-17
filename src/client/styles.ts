@@ -20,9 +20,16 @@ export const STYLES = `
    present none of them is painted. A literal used more than once lives here, so the next rule that
    needs it cannot invent a fifth alpha. */
 :root { --kb-lane-width: 236px; --kb-measure: 62ch; --kb-radius-control: 7px; --kb-radius-card: 8px; --kb-radius-panel: 10px;
+  --kb-control-height: 26px;
   --kb-border-l1: rgba(128,128,128,0.35); --kb-bg-layer-2: rgba(128,128,128,0.12); --kb-label-secondary: rgba(128,128,128,0.9); }
+/* The base type, as three declarations and never as the 'font' shorthand.
+   It was written 'font: 13px/1.5 inherit', which is **invalid CSS**: a family component in the
+   'font' shorthand must be a family (or a system keyword), and 'inherit' is neither -- so the whole
+   declaration was dropped and the panel painted at the app body's 16px. Measured: every one of the
+   84 probe states read 'font-size: 16px' with 'bodySize: 16px'. The family is deliberately left
+   alone: the panel declares none and inherits the app's face, which is the documented position. */
 .kb-page { display: flex; flex-direction: column; height: 100%; min-height: 0; gap: 10px; padding: 14px 16px 18px;
-  font: 13px/1.5 inherit; color: var(--dsw-alias-label-primary, inherit); }
+  font-size: 13px; line-height: 1.5; color: var(--dsw-alias-label-primary, inherit); }
 /* The craft floor's "browser surfaces": the parts this panel never drew still carry its design. The app
    provides a scrollbar ladder and a document-selection fill; both are the app's own tokens, each with a
    literal fallback, so they follow the theme exactly as the rest of the sheet does. 'caret-color' is the
@@ -58,10 +65,14 @@ export const STYLES = `
    element animates into existence, there is no keyframe and no loop, and the whole block is cancelled
    under 'prefers-reduced-motion: reduce' below -- no transition here is load-bearing. */
 .kb-btn { border: 1px solid var(--dsw-alias-border-l1, var(--kb-border-l1)); background: transparent; color: inherit;
-  border-radius: var(--kb-radius-control, 7px); padding: 3px 9px; cursor: pointer; font: inherit; line-height: 1.4;
-  /* A comfortable pointer target for every control, not only the ones that happen to be tall enough:
-     3px + 13px x 1.4 + 3px + 2px of border lands at 24px. The visual weight is unchanged. */
-  min-height: 24px;
+  border-radius: var(--kb-radius-control, 7px); padding: 3px 8px; cursor: pointer; font: inherit; line-height: 1.4;
+  /* One control height for one control row. Measured, the button's border box was 30.39px and an
+     input's was 26.00px in the same bar (210 control-height findings over 7 distinct rows): the
+     inline-flex disclosure's 9px caret sets a taller line box than the text, and the old
+     'min-height: 24px' was a *floor* that never capped the natural box, so it passed while the
+     controls disagreed. 'box-sizing: border-box' plus one height makes the button, the input and
+     the select the same 26px; 'font: inherit' keeps the type. */
+  box-sizing: border-box; height: var(--kb-control-height, 26px); min-height: var(--kb-control-height, 26px);
   transition: background-color 140ms ease-out, border-color 140ms ease-out, transform 140ms ease-out; }
 .kb-btn:hover { background: var(--dsw-alias-bg-layer-2, var(--kb-bg-layer-2)); }
 .kb-btn:active { transform: translateY(1px); }
@@ -99,17 +110,28 @@ export const STYLES = `
    and a greyscale screenshot, and the staged text inside it is what actually says why. */
 .kb-group-danger.kb-staged { background: var(--dsw-alias-bg-layer-2, var(--kb-bg-layer-2)); border-radius: var(--kb-radius-control, 7px); padding: 7px; }
 /* A disclosure's toggle names what it reveals, and its 'aria-expanded' attribute is its state. It is
-   the smallest control on the panel by *type* (12px), but no longer by target: the shared 24px floor
-   above applies here too, so the smallest thing to read is not the hardest thing to hit. */
-.kb-more { display: inline-flex; align-items: center; gap: 4px; padding: 1px 7px; font-size: 12px; }
+   the smallest control on the panel by *type* (12px) and shares the one 26px control height above, so
+   the smallest thing to read is not the hardest thing to hit and a bar holding one is not a row of
+   two heights. Its inset is the same 8px as the button's and the input's, so one bar has one edge. */
+.kb-more { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; font-size: 12px; }
 /* The caret is the open state without colour: right on closed, down on open. Drawn, one stroke,
    'currentColor' -- the same glyph family as the drawn tick and the sidebar icon. */
 .kb-more-caret { flex: 0 0 auto; transition: transform 140ms ease-out; }
 .kb-more[aria-expanded="true"] .kb-more-caret { transform: rotate(90deg); }
 /* The revealed half of a drawer's disclosure, set off from the row it opens from. */
 .kb-fold { display: flex; flex-direction: column; gap: 9px; border-top: 1px solid var(--dsw-alias-border-l1, var(--kb-border-l1)); padding-top: 7px; }
+/* The notice is centre-aligned, not baseline-aligned, and its message takes the row's free width.
+   Baseline on a *two-line* message put a one-line button against the first line's ink and left the
+   block top-heavy (measured: top spread 4.19px, bottom 4.20px on every notice state); centre is what
+   align-items=center means and it is stable however many lines the message wraps to.
+   The message's flex-grow, together with the '.kb-spacer' the strip renders before its button, is
+   what puts Dismiss at the content edge instead of 486.09px short of it -- the strip's only control
+   sat at 45% of the row because the sentence did not stretch. The spacer is the row's own edge
+   device (see .kb-head); the grow covers the error notice, whose message is a bare text node and so
+   has no span for the spacer to stand beside. */
 .kb-notice { border: 1px solid var(--dsw-alias-border-l1, var(--kb-border-l1)); border-radius: var(--kb-radius-control, 7px);
-  padding: 7px 11px; display: flex; gap: 10px; align-items: baseline; }
+  padding: 7px 11px; display: flex; gap: 10px; align-items: center; }
+.kb-notice > span:first-child { flex: 1 1 auto; }
 .kb-notice-refusal { border-color: var(--dsw-alias-state-error-primary, #d64545); }
 .kb-notice-info { border-color: var(--dsw-alias-brand-primary, #4c8bf5); }
 .kb-notice-error { border-color: var(--dsw-alias-state-error-primary, #d64545); }
@@ -128,7 +150,15 @@ export const STYLES = `
    pending board reads as pending at every width instead of as six empty lanes that might be the
    answer. It carries no text; the header's 'connecting...' is the announced half. */
 .kb-skeleton { height: 34px; border-radius: var(--kb-radius-card, 8px); border: 1px dashed var(--dsw-alias-border-l1, var(--kb-border-l1)); }
-.kb-lane { flex: 0 0 var(--kb-lane-width, 236px); display: flex; flex-direction: column; gap: 7px; border: 1px solid var(--dsw-alias-border-l1, var(--kb-border-l1));
+/* The lane's basis, with 'min-width: 0' so the basis actually wins.
+   'flex: 0 0 236px' is a *flex base size*, not a cap: a flex item's automatic minimum size
+   ('min-width: auto', i.e. its min-content width) still wins, so one unbreakable token in one card
+   title -- an ordinary 23-character session id, or the 64-character digest the probe's fixture
+   carries -- set the lane's min-content to 603.03px and the lane rendered 603.03px wide against its
+   own declared 236px (66 findings, every state, theme and width). 'min-width: 0' lets the declared
+   basis hold; the card's own '.kb-card-title' then breaks the token inside the 196px content box
+   instead of pushing the lane out. */
+.kb-lane { flex: 0 0 var(--kb-lane-width, 236px); min-width: 0; display: flex; flex-direction: column; gap: 7px; border: 1px solid var(--dsw-alias-border-l1, var(--kb-border-l1));
   border-radius: var(--kb-radius-panel, 10px); padding: 9px; background: var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.04)); min-height: 110px; }
 /* The drop target cannot rely on the brand token: in dark it resolves to a near-white neutral, so
    the ring vanished into the body. A raised tint plus a dashed secondary-label ring reads in both. */
@@ -139,14 +169,17 @@ export const STYLES = `
    so the collapse narrows the lane instead of turning the label on its side.
    The dashed edge is the panel's existing "not settled" vocabulary (.kb-skeleton, .kb-lane-over), and
    nothing depends on a fill: in light, bg-layer-1, bg-layer-2 and bg-base all resolve to the same
-   colour, so a tint would be a no-op in one theme while carrying the whole meaning in the other. */
-.kb-lane-empty { flex: 0 0 auto; padding: 9px; align-items: stretch; border-style: dashed; }
+   colour, so a tint would be a no-op in one theme while carrying the whole meaning in the other.
+   Both slot rules are now deltas only: the 9px padding is the lane's, so neither restates it, and
+   '.kb-lane-awake' no longer restates 'writing-mode: horizontal-tb' -- nothing in this sheet ever
+   sets a non-initial writing mode for it to undo. One orientation, stated once, for the slot and for
+   the awake lane: the header is a row in both, which is what keeps a drag from flipping it. */
+.kb-lane-empty { flex: 0 0 auto; align-items: stretch; border-style: dashed; }
 .kb-lane-empty .kb-lane-head { flex-direction: row; }
 .kb-lane-empty .kb-cards { width: 100%; min-height: 48px; }
 .kb-lane-empty .kb-empty { display: none; }
-.kb-lane-awake { flex: 0 0 var(--kb-lane-width, 236px); padding: 9px; align-items: stretch; }
+.kb-lane-awake { flex: 0 0 var(--kb-lane-width, 236px); align-items: stretch; }
 .kb-lane-awake .kb-lane-head { flex-direction: row; }
-.kb-lane-awake .kb-lane-name { writing-mode: horizontal-tb; }
 .kb-lane-awake .kb-empty { display: block; }
 .kb-lane-head { display: flex; align-items: center; gap: 7px; line-height: 1.4; }
 .kb-lane-name { font-weight: 600; }
@@ -162,7 +195,7 @@ export const STYLES = `
 .kb-card:hover { border-color: var(--dsw-alias-brand-primary, #4c8bf5); }
 /* A dropped card is not an expedite one: nothing is wrong and nothing is waiting. It keeps its shape
    and its hairline and takes the dim tier, because the only thing it says is "out of play". */
-.kb-card-dropped { color: var(--dsw-alias-label-secondary, inherit); }
+.kb-card-dropped { color: var(--dsw-alias-label-secondary, var(--kb-label-secondary)); }
 /* The expedite/blocked signal is a 1px state-coloured border, never a thick side stripe: the
    state itself is already named in the card's own content (class chip, blocked chip, priority). */
 .kb-card-expedite { border-color: var(--dsw-alias-state-error-primary, #d64545); }
@@ -189,8 +222,13 @@ export const STYLES = `
 .kb-mark { align-self: center; flex: 0 0 auto; color: var(--dsw-alias-state-success-primary, var(--dsw-alias-label-primary, inherit)); }
 .kb-mark .kb-mark-tick { color: var(--dsw-alias-label-primary, inherit); }
 .kb-card-id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--dsw-alias-label-secondary, var(--kb-label-secondary)); font-size: 12px; }
-.kb-card-title { flex: 1 1 auto; text-wrap: pretty; }
-.kb-card-meta { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font-size: 12px; color: var(--dsw-alias-label-secondary, inherit); }
+/* The title is the one text block inside a 196px content box, and it must not be able to set the
+   lane's min-content: an unbreakable token (a session id, a payload digest) would otherwise push
+   the card -- and, before '.kb-lane''s 'min-width: 0', the whole lane -- wider than the sheet says.
+   'overflow-wrap: break-word' breaks a token only when it cannot fit on a line of its own, so
+   ordinary prose is untouched. */
+.kb-card-title { flex: 1 1 auto; text-wrap: pretty; overflow-wrap: break-word; min-width: 0; }
+.kb-card-meta { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font-size: 12px; color: var(--dsw-alias-label-secondary, var(--kb-label-secondary)); }
 .kb-pri { font-weight: 600; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .kb-pri-p0 { color: var(--dsw-alias-state-error-primary, #d64545); }
 /* Every member of the two template-generated families now has a rule, so no class is emitted to style
@@ -220,10 +258,20 @@ export const STYLES = `
 .kb-prose { max-width: var(--kb-measure, 62ch); text-wrap: pretty; }
 .kb-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-word; }
 .kb-input { border: 1px solid var(--dsw-alias-border-l1, var(--kb-border-l1)); background: transparent; color: inherit;
-  border-radius: var(--kb-radius-control, 7px); padding: 3px 8px; font: inherit; min-width: 140px; transition: background-color 140ms ease-out, border-color 140ms ease-out; }
+  border-radius: var(--kb-radius-control, 7px); padding: 3px 8px; font: inherit; line-height: 1.4; min-width: 140px;
+  box-sizing: border-box; height: var(--kb-control-height, 26px); min-height: var(--kb-control-height, 26px);
+  transition: background-color 140ms ease-out, border-color 140ms ease-out; }
 /* A select is a value picker, not a text box: it does not need the search field's width. */
 select.kb-input { min-width: 0; padding-right: 4px; }
 input[type="number"].kb-input { min-width: 76px; }
+/* The drawer's form rows take the drawer's width. Measured before this rule, the comment field was
+   140px in a 927px row and every drawer bar's last control stopped 486-756px short of the row's right
+   content edge (88 findings over 6 states): a form at 15% of its container does not read as narrow-
+   on-purpose, it reads as broken. Only the drawer's own rows are affected -- the page toolbar and the
+   metrics strip keep their spacer-led layout -- and a select's 'padding-right: 4px' keeps its arrow
+   clear of the new edge. */
+.kb-drawer .kb-bar > input.kb-input,
+.kb-drawer .kb-bar > select.kb-input { flex: 1 1 auto; }
 /* A placeholder is text, and the browser's own placeholder styling dims it for you: Chrome applies
    roughly 0.54 of the element's opacity on top of whatever colour the author set, so the passing
    label-secondary above arrived as 2.27:1 in light (and 3.35-4.33:1 in dark). Setting "opacity: 1"
@@ -235,6 +283,16 @@ input[type="number"].kb-input { min-width: 76px; }
 .kb-input:hover { border-color: var(--dsw-alias-border-l2, var(--dsw-alias-border-l1, rgba(128,128,128,0.5))); }
 .kb-metrics { display: flex; gap: 14px; flex-wrap: wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
   font-variant-numeric: tabular-nums;
+  /* The strip's own height is reserved while it has no facts to print. The component renders the
+     empty box during the first read instead of nothing, because an absent child is what moved the
+     board: measured, the lane row started 34.00px higher while loading and settled when the payload
+     landed. The reserved height is the strip's own one-line box at the shared control height (26px
+     -- the disclosure inside it is the tallest thing on the line), so the space the loaded strip
+     takes is the space the loading page already holds. A second wrapped line would still move it,
+     which is the honest limit of reserving a box rather than knowing its content; the alternative --
+     reordering the page so the strip's absence cannot move the lanes -- would put the metrics below
+     the board, which is not the scan order this panel's signature component is built on. */
+  min-height: var(--kb-control-height, 26px);
   /* flex-wrap decides where a *whole item* goes, not what happens inside one: a long sle.source token
      (the basis is the host's own string) ran past the narrowest panel, because neither a lead nor the
      revealed kb-dim fact had anywhere to break. One declaration covers every span in the strip, and a
