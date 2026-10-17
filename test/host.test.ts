@@ -802,29 +802,33 @@ test('health reports the origins it has seen, so a blocked request is diagnosabl
 
 test('reload restarts this entry through the Loader, and answers before it tears itself down', async () => {
   // Dhira's constraint: an app restart makes every other session wait its turn, so a host-half fix
-  // must be applicable in place. The entry id is `include:kanban` and the Loader keys entries by
-  // patch, so the match has to accept both spellings.
+  // must be applicable in place. The installed EntryTree exposes entries as a generator *method*,
+  // and an Entry restarts through its fiber, not through a stop/start pair it does not have.
   const calls: string[] = [];
   const scheduled: (() => void)[] = [];
   const entry = {
-    options: { id: 'include:kanban', name: 'dsh-kanban' },
-    stop: () => {
-      calls.push('stop');
-    },
-    start: () => {
-      calls.push('start');
+    id: 'include:kanban',
+    options: { id: 'kanban', name: 'dsh-kanban' },
+    fiber: {
+      restart: () => {
+        calls.push('restart');
+      },
     },
   };
-  const ctx = { get: (serviceName: string) => (serviceName === 'loader' ? { entries: [entry] } : undefined) } as unknown as DshHostContext;
+  const loader = {
+    *entries() {
+      yield entry;
+    },
+  };
+  const ctx = { get: (serviceName: string) => (serviceName === 'loader' ? loader : undefined) } as unknown as DshHostContext;
 
   const outcome = reloadPlugin(ctx, 'kanban', (work) => scheduled.push(work), 0);
   assert.equal(outcome.ok, true);
-  assert.equal(outcome.api, 'entry(include:kanban).stop/start');
+  assert.equal(outcome.api, 'entry(include:kanban).fiber.restart()');
   assert.deepEqual(calls, [], 'nothing runs inline — the caller still has to be answered');
   for (const work of scheduled) work();
-  assert.deepEqual(calls, ['stop'], 'stop is synchronous; start follows it');
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(calls, ['stop', 'start'], 'and the entry comes back up');
+  assert.deepEqual(calls, ['restart'], 'and the entry is disposed and reloaded after the answer');
 });
 
 test('reload reports exactly why it could not, rather than failing silently', () => {
@@ -832,28 +836,31 @@ test('reload reports exactly why it could not, rather than failing silently', ()
   assert.equal(reloadPlugin(noLoader, 'kanban').ok, false);
   assert.match(reloadPlugin(noLoader, 'kanban').message, /no Loader/);
 
-  const wrongEntry = { get: () => ({ entries: [{ options: { id: 'include:other' } }] }) } as unknown as DshHostContext;
+  const wrongEntry = { get: () => ({ entries: () => [{ options: { id: 'include:other' } }] }) } as unknown as DshHostContext;
   const outcome = reloadPlugin(wrongEntry, 'kanban');
   assert.equal(outcome.ok, false);
   assert.deepEqual(outcome.entries, ['include:other'], 'and names what it did find');
+  assert.match(outcome.api, /function -> array, 1 entry\(ies\)/, 'and the shape it read');
 
-  const noMethods = { get: () => ({ entries: [{ options: { id: 'kanban' } }] }) } as unknown as DshHostContext;
+  const noMethods = { get: () => ({ entries: () => [{ options: { id: 'kanban' } }] }) } as unknown as DshHostContext;
   assert.equal(reloadPlugin(noMethods, 'kanban').ok, false);
-  assert.match(reloadPlugin(noMethods, 'kanban').message, /neither stop\/start/);
+  assert.match(reloadPlugin(noMethods, 'kanban').message, /neither a running fiber nor loader\.update/);
 
   const viaUpdate: string[] = [];
   const updatable = {
     get: () => ({
-      entries: [{ options: { id: 'kanban' } }],
-      update: (id: string) => {
-        viaUpdate.push(id);
+      entries: () => [{ options: { id: 'kanban' } }],
+      update: (id: string, options?: unknown) => {
+        viaUpdate.push(`${id}:${JSON.stringify(options)}`);
       },
     }),
   } as unknown as DshHostContext;
   const scheduled: (() => void)[] = [];
-  assert.equal(reloadPlugin(updatable, 'kanban', (work) => scheduled.push(work), 0).ok, true);
+  const updated = reloadPlugin(updatable, 'kanban', (work) => scheduled.push(work), 0);
+  assert.equal(updated.ok, true);
+  assert.equal(updated.api, 'loader.update(kanban)');
   for (const work of scheduled) work();
-  assert.deepEqual(viaUpdate, ['kanban'], 'a loader without stop/start falls back to update');
+  assert.deepEqual(viaUpdate, ['kanban:{}'], 'an entry with no running fiber is started through loader.update');
 });
 
 test('POST /reload is the human\'s, and says which API it used', async () => {
@@ -862,13 +869,13 @@ test('POST /reload is the human\'s, and says which API it used', async () => {
     const calls: string[] = [];
     const host = fakeHost(INJECTED, {
       loader: {
-        entries: [
-          {
-            options: { id: 'include:kanban', name: 'dsh-kanban' },
-            stop: () => calls.push('stop'),
-            start: () => calls.push('start'),
-          },
-        ],
+        *entries() {
+          yield {
+            id: 'include:kanban',
+            options: { id: 'kanban', name: 'dsh-kanban' },
+            fiber: { restart: () => calls.push('restart') },
+          };
+        },
       },
     });
     await boot(host, box.home);
@@ -883,22 +890,25 @@ test('POST /reload is the human\'s, and says which API it used', async () => {
     assert.equal(allowed.status, 200, allowed.body);
     const payload = JSON.parse(allowed.body) as { ok: boolean; api: string };
     assert.equal(payload.ok, true);
-    assert.equal(payload.api, 'entry(include:kanban).stop/start');
+    assert.equal(payload.api, 'entry(include:kanban).fiber.restart()');
     assert.deepEqual(calls, [], 'the answer is written before the plugin tears itself down');
 
     // And the scheduled work does happen, once the answer is out.
     await new Promise((resolve) => setTimeout(resolve, 350));
-    assert.deepEqual(calls, ['stop', 'start']);
+    assert.deepEqual(calls, ['restart']);
   } finally {
     box.restore();
   }
 });
 
-test('the Loader entry collection is read whatever shape it is, and an odd one is described', () => {
-  // The first live call to POST /reload failed with `entries.find is not a function`: `Loader extends
-  // EntryTree` and its `entries` is not an array. Accept the plausible shapes and *describe* an
-  // unexpected one, so the next failure names the real shape instead of costing a restart to find.
-  const entry = (id: string) => ({ options: { id }, stop: () => {}, start: () => {} });
+test('the Loader entry collection is read in every shape it takes, and an odd one is described', () => {
+  // Live evidence: `loader.entries` was a function, because `EntryTree.entries()` is a generator
+  // method. It must be called; the other shapes stay supported, and an unexpected one is *described*
+  // rather than silently read as an empty collection.
+  const entry = (id: string) => ({
+    options: { id },
+    fiber: { restart: () => {} },
+  });
   const scheduled: (() => void)[] = [];
   const run = (entries: unknown) =>
     reloadPlugin({ get: () => ({ entries }) } as unknown as DshHostContext, 'kanban', (work) => scheduled.push(work), 0);
@@ -906,10 +916,26 @@ test('the Loader entry collection is read whatever shape it is, and an odd one i
   assert.equal(run([entry('include:kanban')]).ok, true, 'an array');
   assert.equal(run(new Map([['kanban', entry('include:kanban')]])).ok, true, 'a Map');
   assert.equal(run({ kanban: entry('include:kanban') }).ok, true, 'a keyed object');
+  assert.equal(
+    run(function* () {
+      yield entry('include:kanban');
+    }).ok,
+    true,
+    'the generator method EntryTree actually has'
+  );
+  assert.equal(run(() => [entry('include:kanban')]).ok, true, 'a function returning an array');
 
   const odd = run({ notEntries: () => {} } as unknown);
   assert.equal(odd.ok, false);
   assert.match(odd.api, /loader\.entries \(object, 1 key\(s\)\)/, 'the failure names the shape it saw');
+
+  const unrecognised = run('kanban');
+  assert.equal(unrecognised.ok, false);
+  assert.match(unrecognised.api, /loader\.entries \(string\)/, 'a primitive is described, not ignored');
+
+  const oddFunction = run(() => 42);
+  assert.equal(oddFunction.ok, false);
+  assert.match(oddFunction.api, /loader\.entries \(function returning number\)/, 'so is a function returning a non-collection');
 
   const absent = run(undefined);
   assert.equal(absent.ok, false);

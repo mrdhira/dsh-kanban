@@ -6,10 +6,18 @@
  * product requirement, not a preference. A host-half fix that costs every running session its place
  * in the queue is a fix that arrives late or not at all.
  *
- * The Loader owns this plugin's entry (`include:kanban`, patch `kanban`), and Cordis reloads an entry
- * by stopping and starting it. So the plugin asks the Loader to do exactly that, and reports which
- * API it used — because the Loader is a Cordis built-in rather than a Service, its shape is not in
- * any inspect catalog, and guessing silently is how this project has lost days.
+ * The Loader owns this plugin's entry (patch `kanban`, module `dsh-kanban`). This code was written
+ * against the installed Loader's source, not against a guess:
+ *
+ * - `Loader extends EntryTree`, and `EntryTree.entries()` is a **generator method**, so the property
+ *   named `entries` is the function, not the collection. Call it and walk what it yields (nested
+ *   subtrees included). The first live route answered `loader.entries (function, 0 key(s))` because
+ *   it inspected the property instead of calling it.
+ * - an `Entry` names its module in `options.name`, and `entry.id` is its nested id (`a:b`), which is
+ *   what `loader.resolve()` and `loader.update()` take.
+ * - an `Entry` has **no** `stop`/`start`. The real restart is `entry.fiber.restart()` — Cordis's
+ *   documented "dispose and immediately reload this plugin with its current config." When an entry
+ *   has no running fiber, the fallback is `loader.update(id, {})`, which starts it.
  *
  * Two properties matter:
  *
@@ -20,18 +28,19 @@
  */
 import type { DshHostContext } from '../types/dsh.js';
 
-/** The little of the Cordis Loader this needs, kept structural so a shape change is visible. */
+/** The little of a Cordis `Entry` this needs, kept structural so a shape change is visible. */
 interface LoaderEntryLike {
+  /** `Entry.id` — the nested id (`include:kanban`) that `loader.update` resolves. */
   readonly id?: string;
   readonly options?: { readonly id?: string; readonly name?: string };
-  start?: (config?: unknown) => unknown;
-  stop?: () => unknown;
-  update?: (config?: unknown) => unknown;
+  /** `Entry.fiber` — the running plugin fiber, which owns `restart()`. */
+  readonly fiber?: { restart?: () => unknown };
 }
 
 interface LoaderLike {
-  readonly entries?: readonly LoaderEntryLike[];
-  update?: (id: string, config?: unknown) => unknown;
+  /** `EntryTree.entries` is a method on the installed Loader; older fakes used a property. */
+  readonly entries?: unknown;
+  update?: (id: string, options?: unknown) => unknown;
 }
 
 export interface ReloadOutcome {
@@ -44,14 +53,16 @@ export interface ReloadOutcome {
 }
 
 function entryIdOf(entry: LoaderEntryLike): string {
-  return entry.options?.id ?? entry.options?.name ?? entry.id ?? '(unnamed)';
+  return entry.id ?? entry.options?.id ?? entry.options?.name ?? '(unnamed)';
 }
 
-/** Does this entry look like ours? The patch id is `kanban`; the loader may key it `include:kanban`. */
+/** Does this entry look like ours? The patch id is `kanban`; the module is `dsh-kanban`. */
 function isOurs(entry: LoaderEntryLike, pluginName: string): boolean {
-  const id = entryIdOf(entry);
   const name = entry.options?.name ?? '';
-  return id === pluginName || id.endsWith(`:${pluginName}`) || name === `dsh-${pluginName}` || name === pluginName;
+  if (name === pluginName || name === `dsh-${pluginName}`) return true;
+  if (name.endsWith(`/${pluginName}`) || name.endsWith(`/dsh-${pluginName}`)) return true;
+  const id = entryIdOf(entry);
+  return id === pluginName || id.endsWith(`:${pluginName}`);
 }
 
 /**
@@ -76,28 +87,28 @@ export function reloadPlugin(
     return { ok: false, api: 'none', message: 'no Loader on this context; reload the app instead' };
   }
 
-  const entries = entryList(loader);
-  const entry = entries.find((candidate) => isOurs(candidate, pluginName));
+  const collection = entryCollection(loader);
+  const entry = collection.entries.find((candidate) => isOurs(candidate, pluginName));
   if (entry === undefined) {
     return {
       ok: false,
-      api: `loader.entries (${describeEntries(loader)})`,
+      api: `loader.entries (${collection.shape})`,
       message: `no Loader entry matched ${pluginName}`,
-      entries: entries.map(entryIdOf),
+      entries: collection.entries.map(entryIdOf),
     };
   }
 
-  if (typeof entry.stop === 'function' && typeof entry.start === 'function') {
+  const id = entryIdOf(entry);
+  if (entry.fiber !== undefined && typeof entry.fiber.restart === 'function') {
     schedule(() => {
-      void Promise.resolve(entry.stop?.()).then(() => entry.start?.());
+      void Promise.resolve(entry.fiber?.restart?.());
     }, delayMs);
-    return { ok: true, api: `entry(${entryIdOf(entry)}).stop/start`, message: 'reloading after this answer' };
+    return { ok: true, api: `entry(${id}).fiber.restart()`, message: 'reloading after this answer' };
   }
 
   if (typeof loader.update === 'function') {
-    const id = entryIdOf(entry);
     schedule(() => {
-      void loader.update?.(id);
+      void Promise.resolve(loader?.update?.(id, {}));
     }, delayMs);
     return { ok: true, api: `loader.update(${id})`, message: 're-applying after this answer' };
   }
@@ -105,33 +116,81 @@ export function reloadPlugin(
   return {
     ok: false,
     api: 'unsupported',
-    message: `the entry ${entryIdOf(entry)} exposes neither stop/start nor a loader.update`,
+    message: `the entry ${id} exposes neither a running fiber nor loader.update`,
   };
+}
+
+/** What a Loader's `entries` turned out to be, and the entries it yielded. */
+interface EntryCollection {
+  readonly entries: readonly LoaderEntryLike[];
+  /** What the property actually was, for the failure message. */
+  readonly shape: string;
+}
+
+function isIterable(value: unknown): value is Iterable<LoaderEntryLike> {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    typeof (value as Iterable<unknown>)[Symbol.iterator] === 'function'
+  );
+}
+
+function kindOf(value: unknown): string {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'array';
+  return typeof value;
 }
 
 /**
  * The Loader's entry collection, whatever shape it is in.
  *
- * `Loader extends EntryTree`, and `EntryTree.entries` is **not an array** — the first live call to this
- * route failed with `entries.find is not a function`, which is exactly the kind of assumption that costs a
- * restart to discover. So all three plausible shapes are accepted (array, `Map`, keyed object) and an
- * unexpected one is *described* rather than guessed at, because the next reader deserves the real shape in
- * the failure message instead of another round trip.
+ * The installed `EntryTree.entries()` is a generator **method**, so a function must be called and
+ * its iterable consumed. Arrays, `Map`s and keyed objects stay supported because tests and older
+ * wrappers use them. Anything else is *described* — never silently treated as empty — because the
+ * failure message is what made this bug diagnosable.
  */
-function entryList(loader: LoaderLike): readonly LoaderEntryLike[] {
-  const raw: unknown = loader.entries;
-  if (Array.isArray(raw)) return raw as readonly LoaderEntryLike[];
-  if (raw instanceof Map) return [...raw.values()] as readonly LoaderEntryLike[];
-  if (raw !== null && typeof raw === 'object') return Object.values(raw as Record<string, LoaderEntryLike>);
-  return [];
-}
+function entryCollection(loader: LoaderLike): EntryCollection {
+  const raw = loader.entries;
 
-/** What `entries` actually is, for the failure message. */
-function describeEntries(loader: LoaderLike): string {
-  const raw: unknown = loader.entries;
-  if (raw === undefined) return 'absent';
-  if (raw === null) return 'null';
-  const kind = Array.isArray(raw) ? 'array' : raw instanceof Map ? 'Map' : typeof raw;
-  const size = typeof raw === 'object' && raw !== null ? Object.keys(raw as object).length : 0;
-  return `${kind}, ${size} key(s)`;
+  if (Array.isArray(raw)) {
+    return { entries: raw as readonly LoaderEntryLike[], shape: `array, ${raw.length} entry(ies)` };
+  }
+
+  if (raw instanceof Map) {
+    const entries = [...raw.values()] as readonly LoaderEntryLike[];
+    return { entries, shape: `Map, ${entries.length} entry(ies)` };
+  }
+
+  if (typeof raw === 'function') {
+    try {
+      const produced = (raw as () => unknown).call(loader);
+      if (produced instanceof Map) {
+        const entries = [...produced.values()] as readonly LoaderEntryLike[];
+        return { entries, shape: `function -> Map, ${entries.length} entry(ies)` };
+      }
+      if (Array.isArray(produced)) {
+        return {
+          entries: produced as readonly LoaderEntryLike[],
+          shape: `function -> array, ${produced.length} entry(ies)`,
+        };
+      }
+      if (isIterable(produced)) {
+        const entries = [...produced];
+        return { entries, shape: `function -> iterable, ${entries.length} entry(ies)` };
+      }
+      return { entries: [], shape: `function returning ${kindOf(produced)}` };
+    } catch (error) {
+      return {
+        entries: [],
+        shape: `function that threw: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
+
+  if (raw !== null && typeof raw === 'object') {
+    const entries = Object.values(raw as Record<string, LoaderEntryLike>);
+    return { entries, shape: `object, ${entries.length} key(s)` };
+  }
+
+  return { entries: [], shape: raw === undefined ? 'absent' : kindOf(raw) };
 }
