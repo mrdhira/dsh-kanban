@@ -57,9 +57,10 @@ cd ~/.dsh/profiles/desktop/plugins/dsh-kanban
    ```bash
    git clone https://github.com/mrdhira/dsh-kanban.git ~/.dsh/profiles/desktop/plugins/dsh-kanban
    ```
-2. **`pnpm install --ignore-workspace`** — this plugin's own toolchain, not the profile's. The
-   `prepare` script runs `node build.mjs`, which writes `lib/**` (the host half, the store and the
-   client half) and `bin/kanban.mjs` — what `main` and the bundle point at.
+2. **`pnpm install`** — this plugin's own toolchain, not the profile's. Its `pnpm-workspace.yaml`
+   allows esbuild's build script, which pnpm 11 blocks by default. The `prepare` script runs
+   `node build.mjs`, which writes `lib/**` (the host half, the store and the client half) and
+   `bin/kanban.mjs` — what `main` and the bundle point at.
 3. **Register the dependency *and* the bundle name** in the profile's `package.json`
    (`~/.dsh/profiles/desktop/package.json`):
    ```json
@@ -214,7 +215,7 @@ Three claims are spelled out here rather than implied:
 
 **Build-time:** Node 22 or newer (the host half is emitted for `node22`, and the suite uses
 `--test-isolation=none`), plus pnpm and the devDependencies — esbuild, TypeScript, React, jsdom. A
-clone needs nothing but `pnpm install --ignore-workspace`.
+clone needs nothing but `pnpm install`.
 
 **Run-time:** the DSH desktop app. The built `lib/**` needs no install step of its own and no
 devDependencies; the store uses `node:sqlite`, which ships with the app's Node. `bin/kanban.mjs` is a
@@ -224,7 +225,7 @@ no `node_modules`.
 ### Development
 
 ```bash
-pnpm install --ignore-workspace   # this plugin's own toolchain, not the profile's
+pnpm install                      # one workspace, one lockfile; `prepare` builds lib/**
 node scripts/gate.mjs             # build + typecheck + tests + freshness, ending in GATE PASS
 node build.mjs                    # host + browser halves, the CLI, and the declarations
 node scripts/typecheck.mjs        # three projects: host, browser, tests
