@@ -247,7 +247,10 @@ export type LocalVerdict = { readonly ok: true } | { readonly ok: false; readonl
 export function missingChecks(task: Task, dow: DefinitionOfWorkflow, gate: 'dor' | 'dod'): string[] {
   const required = gate === 'dor' ? dow.dor : dow.dod;
   const checked: Record<string, unknown> = gate === 'dor' ? { ...task.dor } : { ...task.dod };
-  return required.filter((id) => checked[id] === undefined);
+  // A recorded write scope **is** the named write scope, which is how the host's policy engine
+  // reads it too. This mirror has to agree, or the panel would refuse a move the host accepts.
+  const supplied = gate === 'dor' && task.writeScopes.length > 0 ? ['write-scope'] : [];
+  return required.filter((id) => checked[id] === undefined && !supplied.includes(id));
 }
 
 /**
@@ -289,9 +292,14 @@ export function checkMoveLocally(input: {
   if (!forcing && task.state === 'backlog' && toState !== 'dropped') {
     const missing = missingChecks(task, payload.dow, 'dor');
     if (missing.length > 0) {
+      // Same wording shape as the host's refusal: a missing `write-scope` is a missing field, not a
+      // missing judgement, so the sentence says which field supplies it.
+      const scopeHint = missing.includes('write-scope')
+        ? ' — write-scope has no recorded scope: pass writeScope to kanban_create or kanban_update'
+        : '';
       return {
         ok: false,
-        reason: `cannot leave the backlog: ${missing.length} Definition of Ready check(s) unticked`,
+        reason: `cannot leave the backlog: ${missing.length} Definition of Ready check(s) unticked${scopeHint}`,
         missing,
       };
     }

@@ -150,6 +150,12 @@ export interface Task {
   readonly due: string | null;
   readonly tags: readonly string[];
   readonly links: readonly Link[];
+  /**
+   * The workspace-relative file or directory prefixes this card will write — the fact the DoR's
+   * `write-scope` item names. The same shape the Agent Teams board's `write_scopes` carries, so a
+   * scope means one thing in this home. Empty means "not recorded", which is what the gate refuses.
+   */
+  readonly writeScopes: readonly string[];
   readonly folder: string | null;
   readonly parentId: string | null;
   readonly position: number;
@@ -299,6 +305,8 @@ export interface CreateTaskInput {
   readonly due?: string | null;
   readonly tags?: readonly string[];
   readonly links?: readonly Link[];
+  /** A single prefix or a list of them; normalized and validated at the store. */
+  readonly writeScopes?: readonly string[] | string | null;
   readonly folder?: string | null;
   readonly parentId?: string | null;
   readonly position?: number;
@@ -326,6 +334,8 @@ export interface TaskPatch {
   readonly due?: string | null;
   readonly tags?: readonly string[];
   readonly links?: readonly Link[];
+  /** `[]` or `null` clears the recorded scope; the `write-scope` DoR item then needs a tick again. */
+  readonly writeScopes?: readonly string[] | string | null;
   readonly folder?: string | null;
 }
 

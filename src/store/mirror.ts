@@ -88,6 +88,10 @@ export function renderTodoMd(input: MirrorInput): string {
     `SLE: ${Math.round(dow.sle.p * 100)}% of items finish in ${metrics.sle.days} day(s) or less (${metrics.sle.source}${metrics.sle.source === 'history' ? `, from ${metrics.sle.basis} finished` : ', best guess until 10 items finish'}).`
   );
   lines.push('');
+  // The write scope rides in the Links cell rather than as a tenth column: `check-board.mjs` reads
+  // this table as nine columns, and a generated view that breaks its own checker is not a view. The
+  // header keeps its old word, so a board whose cards record no scope renders byte-for-byte as it
+  // always did — a renamed header would make every existing `todo.md` look stale on the next check.
   lines.push('| ID | Task | State | Pri | CoS | Owner | Project | Age | Links |');
   lines.push('|---|---|---|---|---|---|---|---|---|');
 
@@ -101,13 +105,16 @@ export function renderTodoMd(input: MirrorInput): string {
     if (task.blockedReason !== null) flags.push(`**blocked**`);
     if (task.exceptions.length > 0) flags.push(`${task.exceptions.length} except.`);
     const title = flags.length > 0 ? `${task.title} ${flags.join(' ')}` : task.title;
+    // The scope is a pointer, which is what this cell already holds — and an empty one stays empty
+    // rather than printing a second em dash, so the view reads the same for cards without a scope.
+    const scope = task.writeScopes.length > 0 ? ` · scope \`${task.writeScopes.join(', ')}\`` : '';
     // The state column carries the **state id**, not the display label. This file is read by
     // `check-board.mjs` as much as by a human, and an id is unambiguous where "In Progress" is a
     // second spelling that can drift from the vocabulary. The header above spells them in order.
     lines.push(
       `| ${task.id} | ${title} | \`${task.state}\` | ${PRIORITY_LABEL[task.priority].split(' ')[0] ?? ''} | ${
         CLASS_LABEL[task.classOfService]
-      } | ${task.assignee ?? '—'} | ${task.project ?? '—'} | ${age} | ${linkOf(task)} |`
+      } | ${task.assignee ?? '—'} | ${task.project ?? '—'} | ${age} | ${linkOf(task)}${scope} |`
     );
   }
 

@@ -51,6 +51,7 @@ export function makeTask(overrides: Partial<Task> = {}): Task {
     due: null,
     tags: [],
     links: [],
+    writeScopes: [],
     folder: null,
     parentId: null,
     position: 0,

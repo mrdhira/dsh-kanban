@@ -196,6 +196,10 @@ export function importTodoMd(
       state: row.state,
       assignee: row.assignee,
       links: row.links,
+      // The legacy column was the only place a write scope lived. It becomes the store's own fact
+      // rather than prose in the description, so an imported card's `write-scope` DoR item is
+      // satisfied by data like any other card's — the tick below is kept for the row that had one.
+      writeScopes: row.writeScope === null ? [] : [row.writeScope],
       folder: row.folder,
       dor: dor.filter((check) => (DOR_CHECKS as readonly string[]).includes(check)),
     };

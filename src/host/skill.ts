@@ -28,6 +28,10 @@ board. Every mutation you make is one row plus one event, so the flow metrics st
    (\`outcome\`, \`acceptance\`, \`write-scope\`, \`estimate\`). \`kanban_move\` refuses otherwise and names
    the unticked checks. Tick them with \`kanban_update\`'s \`check\` action as you learn the answers —
    that is refinement, and it is the point.
+   **\`write-scope\` is data, not a judgement.** Put the scope on the card — \`kanban_create\` and
+   \`kanban_update\` both take \`writeScope\`, one workspace-relative file or directory prefix or a
+   list of them — and the item is satisfied; you do not have to tick it as well. A card with no
+   recorded scope is refused **by name**, and that refusal is the board asking for the field.
 2. **WIP is controlled**: \`in-progress\` holds 2, \`review\` holds 1. When a column is full, the move
    is refused. That is the board working, not an obstacle: finish something, or ask Dhira to
    expedite — you may not expedite for yourself.
@@ -46,8 +50,8 @@ board. Every mutation you make is one row plus one event, so the flow metrics st
 |---|---|
 | \`kanban_list\` | the board: filter by state, assignee, project, workspace, sprint, tag, priority, blocked, or free text. Start here. |
 | \`kanban_get\` | one card in full: checklists, comments, history. |
-| \`kanban_create\` | a new card, with a title and an optional template. It starts in \`backlog\`. |
-| \`kanban_update\` | prose, metadata, assignment, tags, links — and \`check\` to tick a DoR/DoD item, \`comment\` to say something, \`block\`/\`unblock\`. |
+| \`kanban_create\` | a new card, with a title, an optional template and its \`writeScope\`. It starts in \`backlog\`. |
+| \`kanban_update\` | prose, metadata, assignment, tags, links, \`writeScope\` — and \`check\` to tick a DoR/DoD item, \`comment\` to say something, \`block\`/\`unblock\`. |
 | \`kanban_move\` | change column. This is the one that enforces the gates and the WIP limits. |
 | \`kanban_delete\` | \`drop\` with a reason (kept in the metrics), or \`purge\` — which only Dhira may do. |
 | \`kanban_sprint\` | create, start, close or cancel a sprint. A sprint is 31 days or less and has a goal. |

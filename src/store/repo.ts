@@ -97,6 +97,7 @@ interface TaskRow {
   readonly due: string | null;
   readonly tags: string;
   readonly links: string;
+  readonly write_scopes: string;
   readonly folder: string | null;
   readonly parent_id: string | null;
   readonly position: number;
@@ -124,8 +125,8 @@ function parseJson<T>(raw: string, fallback: T): T {
 
 const TASK_COLUMNS = `id, title, outcome, description, acceptance, state, priority, class_of_service,
   blocked_reason, dropped_reason, assignee, project, workspace, sprint_id, estimate, due, tags, links,
-  folder, parent_id, position, rev, dor, dod, exceptions, created_at, updated_at, started_at, finished_at,
-  created_by, updated_by`;
+  write_scopes, folder, parent_id, position, rev, dor, dod, exceptions, created_at, updated_at, started_at,
+  finished_at, created_by, updated_by`;
 
 function toTask(row: TaskRow): Task {
   if (!(STATES as readonly string[]).includes(row.state)) {
@@ -157,6 +158,7 @@ function toTask(row: TaskRow): Task {
     due: row.due,
     tags: parseJson<readonly string[]>(row.tags, []),
     links: parseJson<readonly Link[]>(row.links, []),
+    writeScopes: parseJson<readonly string[]>(row.write_scopes, []),
     folder: row.folder,
     parentId: row.parent_id,
     position: row.position,
@@ -399,6 +401,45 @@ function appendEvent(
 
 // --------------------------------------------------------------------------- writes
 
+/**
+ * Normalize a write scope to the shape the board stores, or refuse it.
+ *
+ * The shape is the Agent Teams board's: a list of **workspace-relative** file or directory
+ * prefixes. `./src/store` and `src/store/` are the same prefix as `src/store`, so they are folded
+ * rather than stored three ways; an absolute path, a drive letter, an empty entry and a `.`/`..`
+ * segment are refused, because a scope that escapes the workspace is not a scope and a card whose
+ * scope silently means nothing is worse than a refused write.
+ *
+ * A bare string is accepted so one path does not have to be wrapped in an array to be legal.
+ */
+export function normalizeWriteScopes(value: unknown, field = 'writeScopes'): string[] {
+  if (value === undefined || value === null) return [];
+  const list = typeof value === 'string' ? [value] : Array.isArray(value) ? value : null;
+  if (list === null) {
+    throw new InvalidError(`${field} must be a string or an array of strings`);
+  }
+  const out: string[] = [];
+  for (const entry of list) {
+    if (typeof entry !== 'string') throw new InvalidError(`${field} entries must be strings`);
+    const normalized = entry
+      .trim()
+      .replace(/\\/g, '/')
+      .replace(/^\.\//, '')
+      .replace(/\/+$/, '');
+    const segments = normalized.split('/');
+    const escapes =
+      normalized.length === 0 ||
+      normalized.startsWith('/') ||
+      /^[a-z]:/i.test(normalized) ||
+      segments.some((segment) => segment.length === 0 || segment === '.' || segment === '..');
+    if (escapes) {
+      throw new InvalidError(`${field} ${JSON.stringify(entry)} is not a workspace-relative path prefix`);
+    }
+    out.push(normalized);
+  }
+  return out;
+}
+
 interface InsertInput extends CreateTaskInput {
   readonly state: State;
   readonly priority: Priority;
@@ -432,9 +473,9 @@ function insertTask(board: Board, input: InsertInput, options: MutationOptions):
     board,
     `INSERT INTO tasks (id, title, outcome, description, acceptance, state, priority, class_of_service,
       blocked_reason, dropped_reason, assignee, project, workspace, sprint_id, estimate, due, tags, links,
-      folder, parent_id, position, rev, dor, dod, exceptions, created_at, updated_at, started_at, finished_at,
-      created_by, updated_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, '{}', '[]', ?, ?, ?, ?, ?, ?)`,
+      write_scopes, folder, parent_id, position, rev, dor, dod, exceptions, created_at, updated_at, started_at,
+      finished_at, created_by, updated_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, '{}', '[]', ?, ?, ?, ?, ?, ?)`,
     [
       input.id as string,
       input.title.trim(),
@@ -453,6 +494,7 @@ function insertTask(board: Board, input: InsertInput, options: MutationOptions):
       input.due ?? null,
       JSON.stringify(input.tags ?? []),
       JSON.stringify(input.links ?? []),
+      JSON.stringify(input.writeScopes ?? []),
       input.folder ?? null,
       input.parentId ?? null,
       input.position ?? nextPosition(board, state),
@@ -519,6 +561,10 @@ export function createTask(board: Board, input: CreateTaskInput, options: Create
     );
   }
 
+  // Validated before the transaction opens, like every other field: a scope that escapes the
+  // workspace is a caller error, and it must not be discovered halfway through an insert.
+  const writeScopes = normalizeWriteScopes(input.writeScopes);
+
   return withWrite(board, () => {
     const id = input.id ?? generateTaskId(board);
     if (queryOne<{ id: string }>(board, 'SELECT id FROM tasks WHERE id = ?', [id]) !== undefined) {
@@ -526,7 +572,7 @@ export function createTask(board: Board, input: CreateTaskInput, options: Create
     }
     return insertTask(
       board,
-      { ...input, id, state: requestedState, priority, classOfService },
+      { ...input, id, state: requestedState, priority, classOfService, writeScopes },
       options
     );
   });
@@ -559,6 +605,7 @@ const EDITABLE: readonly EditableField[] = [
   { key: 'due', column: 'due', encode: (v) => (v === null ? null : String(v)) },
   { key: 'tags', column: 'tags', encode: (v) => JSON.stringify(v ?? []) },
   { key: 'links', column: 'links', encode: (v) => JSON.stringify(v ?? []) },
+  { key: 'writeScopes', column: 'write_scopes', encode: (v) => JSON.stringify(normalizeWriteScopes(v)) },
   { key: 'folder', column: 'folder', encode: (v) => (v === null ? null : String(v)) },
 ];
 

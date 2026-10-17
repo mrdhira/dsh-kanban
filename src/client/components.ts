@@ -608,7 +608,18 @@ function ChecklistRows(props: ChecksProps): ReactElement {
     { className: 'kb-checks', role: 'group', 'aria-label': gate === 'dor' ? 'Definition of Ready' : 'Definition of Done' },
     React.createElement('span', { className: 'kb-dim' }, gate === 'dor' ? 'Definition of Ready' : 'Definition of Done'),
     items.map((id) => {
-      const missing = checked[id] === undefined;
+      /**
+       * `write-scope` is satisfied by recorded data as well as by a tick.
+       *
+       * The scope is a fact the tools can carry, so a card with one has named its write scope
+       * whether or not anyone clicked. Showing the row unticked would contradict the gate the row
+       * exists to report — and this row was the permanent untick that started the defect.
+       */
+      const supplied = gate === 'dor' && id === 'write-scope' && task.writeScopes.length > 0;
+      const missing = checked[id] === undefined && !supplied;
+      // The stored value is drawn on the item that asks for it. No second surface, no new field.
+      const detail =
+        id === 'write-scope' && task.writeScopes.length > 0 ? `: ${task.writeScopes.join(', ')}` : '';
       return React.createElement(
         'button',
         {
@@ -623,12 +634,14 @@ function ChecklistRows(props: ChecksProps): ReactElement {
           // chosen and disabled, which the sheet's `[aria-pressed="true"]:disabled` rule exists for.
           disabled: state.busy,
           onClick: () => {
-            void store.tick(task.id, gate, id, missing);
+            // A recorded scope is not un-recordable from the checklist — clearing the scope is what
+            // removes the fact — so a supplied row records the tick and never clears the data.
+            void store.tick(task.id, gate, id, supplied ? true : missing);
           },
         },
         checkGlyph(React, !missing, 'kb-check-glyph'),
         // `· unticked` carries the amber's meaning as text, for the same AA reason as the card badge.
-        React.createElement('span', null, `${CHECK_LABEL[id]}${missing ? ' · unticked' : ''}`)
+        React.createElement('span', null, `${CHECK_LABEL[id]}${detail}${missing ? ' · unticked' : ''}`)
       );
     })
   );
@@ -1107,6 +1120,11 @@ function Drawer(props: DrawerProps): ReactElement {
       { className: 'kb-list' },
       React.createElement('span', { className: 'kb-dim kb-prose' }, `outcome: ${task.outcome ?? '—'}`),
       React.createElement('span', { className: 'kb-dim kb-prose' }, `acceptance: ${task.acceptance ?? '—'}`),
+      // One line, and only when there is something to say: the scope is card data the drawer would
+      // otherwise make the reader open a tool to see.
+      task.writeScopes.length === 0
+        ? null
+        : React.createElement('span', { className: 'kb-dim kb-prose' }, `write scope: ${task.writeScopes.join(', ')}`),
       React.createElement(
         'span',
         { className: 'kb-dim' },

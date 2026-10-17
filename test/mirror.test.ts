@@ -190,3 +190,22 @@ test('a backlog folder is shown, not linked, because its folder may not exist ye
   assert.equal(text.includes('[T-010](T-010-queued/requirements.md)'), false, 'but it is not a link');
   assert.match(text, /\[T-011\]\(T-011-started\/requirements\.md\)/, 'a started card keeps its link');
 });
+
+// ------------------------------------------------------------------ the write scope
+
+test('write-scope: the generated view carries the scope without adding a tenth column', () => {
+  const scoped = makeTask({ id: 'T-050', title: 'scoped', state: 'ready', writeScopes: ['src/store/**', 'test/**'] });
+  const text = render([scoped]);
+  assert.match(text, /scope `src\/store\/\*\*, test\/\*\*`/, 'the prefixes are in the view');
+  assert.match(text, /\| ID \| Task \| State \| Pri \| CoS \| Owner \| Project \| Age \| Links \|/);
+
+  // `check-board.mjs` reads this table as nine columns, so the fact rides in the Links cell rather
+  // than becoming a column the checker would refuse. Ten pipes is nine columns.
+  const row = text.split('\n').find((line) => line.startsWith('| T-050 '));
+  assert.equal((row?.match(/\|/g) ?? []).length, 10, 'nine columns still');
+
+  // A card with no scope renders nothing extra — the empty case is the common case, and the header
+  // is deliberately unchanged so an existing `todo.md` with no scoped card stays byte-identical.
+  assert.doesNotMatch(render([makeTask({ id: 'T-051', title: 'plain' })]), /scope `/);
+  assert.equal(render([makeTask({ id: 'T-052', title: 'plain' })]).includes('Links / scope'), false);
+});

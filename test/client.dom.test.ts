@@ -2750,3 +2750,29 @@ test('the stylesheet string is one unbroken template literal', () => {
     'exactly one backtick after the opening delimiter: the one that closes it',
   );
 });
+
+// ------------------------------------------------------------------ the write scope
+
+test('write-scope: the checklist row shows the recorded scope and reads as chosen, without a tick', async () => {
+  const base = fixture();
+  const tasks = (base.tasks as Record<string, unknown>[]).map((task) =>
+    task.id === 'T-002' ? { ...task, writeScopes: ['src/store/**', 'test/**'] } : task
+  );
+  const view = await mountBoard(loadBundle(), { ...base, tasks });
+  await view.click('[data-card="T-002"]');
+  await flush();
+
+  const drawer = view.find('[data-drawer="T-002"]');
+  assert.match(drawer?.textContent ?? '', /write scope: src\/store\/\*\*, test\/\*\*/, 'the drawer says it');
+  const rows = view.findAll('[data-drawer="T-002"] .kb-check');
+  const scopeRow = rows.find((row) => (row.textContent ?? '').includes('src/store/**'));
+  assert.notEqual(scopeRow, undefined, 'the DoR row for the item carries the value');
+  assert.equal(
+    scopeRow?.getAttribute('aria-pressed'),
+    'true',
+    'a recorded scope is the fact, so the row is chosen even with an empty DoR map'
+  );
+  const outcomeRow = rows.find((row) => (row.textContent ?? '').includes('One-line outcome'));
+  assert.equal(outcomeRow?.getAttribute('aria-pressed'), 'false', 'and a row with no fact is still unticked');
+  view.unmount();
+});

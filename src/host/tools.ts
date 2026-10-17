@@ -41,6 +41,7 @@ import {
   listTasks,
   listTemplates,
   listViews,
+  missingChecks,
   moveTask,
   purgeTask,
   readBoardTitle,
@@ -48,6 +49,7 @@ import {
   renderTodoMd,
   setCheck,
   startSprint,
+  suppliedChecks,
   unblockTask,
   updateTask,
 } from '../store/index.js';
@@ -78,6 +80,8 @@ interface CardSummary {
   readonly classOfService: ClassOfService;
   readonly assignee: string | null;
   readonly blocked: string | null;
+  /** What the card says it will write — the fact the DoR's `write-scope` item is about. */
+  readonly writeScopes: readonly string[];
   readonly dorMissing: readonly string[];
   readonly dodMissing: readonly string[];
   readonly rev: number;
@@ -92,8 +96,9 @@ function summarise(task: Task, dow: { dor: readonly string[]; dod: readonly stri
     classOfService: task.classOfService,
     assignee: task.assignee,
     blocked: task.blockedReason,
-    dorMissing: dow.dor.filter((check) => task.dor[check as CheckId] === undefined),
-    dodMissing: dow.dod.filter((check) => task.dod[check as CheckId] === undefined),
+    writeScopes: task.writeScopes,
+    dorMissing: missingChecks(task.dor, dow.dor, suppliedChecks(task)),
+    dodMissing: missingChecks(task.dod, dow.dod),
     rev: task.rev,
   };
 }
@@ -189,6 +194,8 @@ function boardText(tasks: readonly Task[], dow: { dor: readonly string[]; dod: r
       const flags: string[] = [];
       if (summary.blocked !== null) flags.push('BLOCKED');
       if (summary.classOfService === 'expedite') flags.push('EXPEDITE');
+      // The scope is card data, so it rides with the other facts rather than only in `kanban_get`.
+      if (summary.writeScopes.length > 0) flags.push(`scope ${summary.writeScopes.join(', ')}`);
       if (summary.dorMissing.length > 0 && state === 'backlog') flags.push(`DoR missing: ${summary.dorMissing.join(', ')}`);
       if (summary.dodMissing.length > 0 && state === 'review') flags.push(`DoD missing: ${summary.dodMissing.join(', ')}`);
       lines.push(
@@ -289,8 +296,14 @@ export function createTools(deps: ToolDeps): DshToolDefinition[] {
       const comments = listComments(board, id);
       const events = listEvents(board, { taskId: id, limit: 50 });
       const definition = readDow(board);
-      const missingDor = definition.dor.filter((check) => task.dor[check as CheckId] === undefined);
-      const missingDod = definition.dod.filter((check) => task.dod[check as CheckId] === undefined);
+      const missingDor = missingChecks(task.dor, definition.dor, suppliedChecks(task));
+      const missingDod = missingChecks(task.dod, definition.dod);
+      // `write-scope` missing is not a judgement call: it means no scope is recorded, and the fix
+      // is a field. Saying so here is what makes the refusal something a caller can act on.
+      const scopeHint =
+        missingDor.includes('write-scope')
+          ? ' (no scope recorded — pass writeScope to kanban_create or kanban_update)'
+          : '';
       const lines = [
         `${task.id} — ${task.title}`,
         `state ${task.state} · ${task.priority} · ${task.classOfService}${
@@ -301,7 +314,8 @@ export function createTools(deps: ToolDeps): DshToolDefinition[] {
         task.outcome === null ? '' : `outcome: ${task.outcome}`,
         task.acceptance === null ? '' : `acceptance: ${task.acceptance}`,
         task.description === null ? '' : `description: ${task.description}`,
-        `DoR: ${missingDor.length === 0 ? 'complete' : `missing ${missingDor.join(', ')}`}`,
+        task.writeScopes.length === 0 ? '' : `write scope: ${task.writeScopes.join(', ')}`,
+        `DoR: ${missingDor.length === 0 ? 'complete' : `missing ${missingDor.join(', ')}`}${scopeHint}`,
         `DoD: ${missingDod.length === 0 ? 'complete' : `missing ${missingDod.join(', ')}`}`,
         task.exceptions.length === 0 ? '' : `exceptions: ${task.exceptions.length}`,
         `rev ${task.rev} · created ${task.createdAt} by ${task.createdBy}`,
@@ -330,6 +344,15 @@ export function createTools(deps: ToolDeps): DshToolDefinition[] {
       assignee: { type: 'string', description: 'An agent name, a teammate name, or "human".' },
       project: { type: 'string', description: 'Project this belongs to.' },
       workspace: { type: 'string', description: 'Workspace path or id.' },
+      // The DoR item this satisfies is named, because that is why the field exists: without it a
+      // card's `write-scope` check had no fact behind it, and no tool could supply one. A single
+      // string is accepted as well as a list — one path should not need wrapping to be legal.
+      writeScope: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'DoR `write-scope`: the workspace-relative file or directory prefixes this card will write, e.g. "src/store/**". An array, or a single string. A stored scope satisfies the item.',
+      },
       estimate: { type: 'number', description: 'Size in points.' },
       folder: { type: 'string', description: 'The task folder, e.g. tasks/T-013-slug.' },
       template: { type: 'string', description: 'A template id from kanban_board.' },
@@ -380,6 +403,7 @@ export function createTools(deps: ToolDeps): DshToolDefinition[] {
           ...(typeof input.assignee === 'string' ? { assignee: input.assignee } : {}),
           ...(typeof input.project === 'string' ? { project: input.project } : {}),
           ...(typeof input.workspace === 'string' ? { workspace: input.workspace } : {}),
+          ...(input.writeScope === undefined ? {} : { writeScopes: input.writeScope as readonly string[] | string }),
           ...(typeof input.estimate === 'number' ? { estimate: input.estimate } : {}),
           ...(typeof input.folder === 'string' ? { folder: input.folder } : {}),
         },
@@ -413,6 +437,12 @@ export function createTools(deps: ToolDeps): DshToolDefinition[] {
       project: { type: 'string', description: 'edit: project.' },
       workspace: { type: 'string', description: 'edit: workspace.' },
       tags: { type: 'array', description: 'edit: replace the tags.', items: { type: 'string' } },
+      writeScope: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'edit: replace the write scope — the DoR `write-scope` item. Workspace-relative prefixes; an array, or a single string. `[]` clears it.',
+      },
       folder: { type: 'string', description: 'edit: task folder.' },
       estimate: { type: 'number', description: 'edit: size in points.' },
       priority: { type: 'string', enum: [...PRIORITIES], description: 'edit (human only): priority.' },
@@ -468,6 +498,9 @@ export function createTools(deps: ToolDeps): DshToolDefinition[] {
       for (const key of ['title', 'outcome', 'acceptance', 'description', 'assignee', 'project', 'workspace', 'folder', 'estimate', 'priority', 'classOfService', 'tags']) {
         if (input[key] !== undefined) patch[key] = input[key];
       }
+      // The argument is named for the DoR item (`writeScope`); the column is a list (`write_scopes`).
+      // A single string is accepted here too, and the store normalizes either shape.
+      if (input.writeScope !== undefined) patch.writeScopes = input.writeScope;
       const task = updateTask(
         board,
         id,

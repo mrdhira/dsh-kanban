@@ -87,6 +87,7 @@ function card(id: string, state: Task['state'], extra: Partial<Task> = {}): Task
     due: null,
     tags: [],
     links: [],
+    writeScopes: [],
     folder: null,
     parentId: null,
     position: 0,
@@ -421,4 +422,32 @@ test('age formatting is locale-free and drops the decimal on whole days', () => 
 test('the priority badge is short and stable', () => {
   assert.equal(priorityBadge('p0-critical'), 'P0');
   assert.equal(priorityBadge('p4-someday'), 'P4');
+});
+
+// ------------------------------------------------------------------ the write scope
+
+/** Every DoR item except `write-scope`, which the recorded scope is meant to answer. */
+const REFINED_EXCEPT_SCOPE = Object.fromEntries(
+  ['outcome', 'acceptance', 'estimate'].map((id) => [id, { at: 'x', by: 'y' }])
+);
+
+test('write-scope: a recorded scope satisfies the local DoR gate, so the panel does not refuse what the host allows', () => {
+  const scoped = payload([
+    card('T-001', 'backlog', { dor: REFINED_EXCEPT_SCOPE, writeScopes: ['src/store/**'] }),
+  ]);
+  assert.deepEqual(
+    checkMoveLocally({ payload: scoped, task: scoped.tasks[0] as Task, toState: 'ready' }),
+    { ok: true }
+  );
+  assert.deepEqual(missingChecks(scoped.tasks[0] as Task, scoped.dow, 'dor'), []);
+});
+
+test('write-scope: with no scope the local refusal names the field that supplies it', () => {
+  const unscoped = payload([card('T-001', 'backlog', { dor: REFINED_EXCEPT_SCOPE })]);
+  const verdict = checkMoveLocally({ payload: unscoped, task: unscoped.tasks[0] as Task, toState: 'ready' });
+  assert.equal(verdict.ok, false);
+  if (!verdict.ok) {
+    assert.deepEqual(verdict.missing, ['write-scope']);
+    assert.match(verdict.reason, /writeScope/);
+  }
 });

@@ -21,7 +21,7 @@ import {
 } from './types.js';
 
 /** The version this build writes. A change to `MIGRATIONS` increments it. */
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 /** `'a', 'b', 'c'` — the SQL form of a union, from its single source. */
 function inList(values: readonly string[]): string {
@@ -131,6 +131,20 @@ export const MIGRATIONS: readonly string[] = [
     group_by    TEXT NOT NULL DEFAULT 'state',
     order_index REAL NOT NULL DEFAULT 0
   );
+  `,
+  /**
+   * v2 — the write scope, as data.
+   *
+   * The Definition of Ready has always named `write-scope`, but no tool could supply the fact:
+   * `migrate-todo.ts` read a legacy column, so every card authored through `kanban_*` was gated on
+   * something no caller could provide. The column is JSON text like `tags`/`links`; a database from
+   * v1 gains it with every existing row at `'[]'`, which is honest — those rows never recorded one.
+   *
+   * `ALTER TABLE ... ADD COLUMN` is append-only, which is why this is a migration rather than an
+   * edit to the v1 `CREATE TABLE`: v1 databases already exist and are migrated, not rebuilt.
+   */
+  `
+  ALTER TABLE tasks ADD COLUMN write_scopes TEXT NOT NULL DEFAULT '[]';
   `,
 ];
 

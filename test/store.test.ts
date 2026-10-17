@@ -10,16 +10,19 @@ import { test } from 'node:test';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import assert from 'node:assert/strict';
 import {
   ConflictError,
   DEFAULT_DOW,
   InvalidError,
+  MIGRATIONS,
   NotFoundError,
   PolicyViolation,
   COMMENT_EVENT_PREVIEW_CHARS,
   MAX_COMMENT_CHARS,
   MAX_IMPORT_CHARS,
+  SCHEMA_VERSION,
   addComment,
   boardRevision,
   blockTask,
@@ -828,4 +831,125 @@ test('openBoard() with no argument opens the default location', () => {
     else process.env.DSH_HOME = previous;
     rmSync(home, { recursive: true, force: true });
   }
+});
+
+// ------------------------------------------------------------------ the write scope
+
+/**
+ * A v1 database, built from the v1 migration itself and given one row.
+ *
+ * Opening it is the only honest way to test a migration: a database created by *this* build is
+ * already at the new version, so it proves nothing about the upgrade path a live `board.db` takes.
+ */
+function writeV1Board(path: string): void {
+  const db = new DatabaseSync(path);
+  db.exec(MIGRATIONS[0] as string);
+  db.exec('PRAGMA user_version = 1');
+  db.prepare(
+    `INSERT INTO tasks (id, title, state, priority, class_of_service, position, created_at, updated_at, created_by, updated_by)
+     VALUES ('T-900', 'a v1 row', 'backlog', 'p2-normal', 'standard', 0,
+             '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', 'human:dhira', 'human:dhira')`
+  ).run();
+  db.close();
+}
+
+test('write-scope: a v1 board migrates, its rows gain an empty scope, and the schema moves to v2', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'kanban-v1-'));
+  const path = join(dir, 'board.db');
+  try {
+    writeV1Board(path);
+    const board = openBoard(path);
+    try {
+      assert.equal(SCHEMA_VERSION, 2, 'the build writes version 2');
+      const version = board.db.prepare('PRAGMA user_version').get() as { user_version: number };
+      assert.equal(version.user_version, 2, 'the migration ran through the user_version path');
+      const column = board.db
+        .prepare("SELECT 1 AS present FROM pragma_table_info('tasks') WHERE name = 'write_scopes'")
+        .get();
+      assert.notEqual(column, undefined, 'the column exists after the migration');
+      assert.deepEqual(
+        getTask(board, 'T-900')?.writeScopes,
+        [],
+        'a row that never recorded a scope does not get one invented'
+      );
+      assert.equal(getTask(board, 'T-900')?.title, 'a v1 row', 'and the row itself survived');
+    } finally {
+      board.close();
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('write-scope: a recorded scope satisfies the DoR item, so the card leaves the backlog without a tick', () => {
+  const board = newBoard();
+  const card = createTask(
+    board,
+    { title: 'scoped', writeScopes: ['src/store/**', 'test/**'] },
+    { actor: AGENT, now: NOW }
+  );
+  // Everything the card can answer in prose is ticked; `write-scope` is answered by the field.
+  for (const check of ['outcome', 'acceptance', 'estimate'] as const) {
+    setCheck(board, card.id, 'dor', check, true, { actor: AGENT, now: NOW });
+  }
+
+  const ready = moveTask(board, { id: card.id, toState: 'ready' }, { actor: AGENT, now: NOW });
+  assert.equal(ready.state, 'ready', 'the gate accepts the recorded scope');
+  assert.deepEqual(getTask(board, card.id)?.writeScopes, ['src/store/**', 'test/**']);
+  assert.equal(
+    getTask(board, card.id)?.dor['write-scope'],
+    undefined,
+    'and no tick was needed — the fact is the evidence'
+  );
+  board.close();
+});
+
+test('write-scope: the item can still be ticked with a scope stored, and the tick is recorded', () => {
+  const board = newBoard();
+  const card = createTask(board, { title: 'scoped', writeScopes: ['src/**'] }, { actor: AGENT, now: NOW });
+  const ticked = setCheck(board, card.id, 'dor', 'write-scope', true, { actor: AGENT, now: NOW });
+  assert.notEqual(ticked.dor['write-scope'], undefined, 'the acceptance the defect named: it can be ticked');
+  assert.deepEqual(getTask(board, card.id)?.writeScopes, ['src/**'], 'because the fact behind it is stored');
+  for (const check of ['outcome', 'acceptance', 'estimate'] as const) {
+    setCheck(board, card.id, 'dor', check, true, { actor: AGENT, now: NOW });
+  }
+  assert.equal(moveTask(board, { id: card.id, toState: 'ready' }, { actor: AGENT, now: NOW }).state, 'ready');
+  board.close();
+});
+
+test('write-scope: a card with no scope is refused by name, and the refusal says which field supplies it', () => {
+  const board = newBoard();
+  const card = createTask(board, { title: 'unscoped' }, { actor: AGENT, now: NOW });
+  for (const check of ['outcome', 'acceptance', 'estimate'] as const) {
+    setCheck(board, card.id, 'dor', check, true, { actor: AGENT, now: NOW });
+  }
+  assert.throws(
+    () => moveTask(board, { id: card.id, toState: 'ready' }, { actor: AGENT, now: NOW }),
+    (error: unknown) =>
+      error instanceof PolicyViolation &&
+      error.policyCode === 'dor-incomplete' &&
+      /write-scope/.test(error.message) &&
+      /writeScope/.test(error.message),
+    'the caller is told the field, not just the check id'
+  );
+  assert.equal(getTask(board, card.id)?.state, 'backlog');
+  board.close();
+});
+
+test('write-scope: a prefix is normalized to one spelling, and one that escapes the workspace is refused', () => {
+  const board = newBoard();
+  const card = createTask(board, { title: 'scoped', writeScopes: './src/store/' }, { actor: HUMAN, now: NOW });
+  assert.deepEqual(card.writeScopes, ['src/store'], 'a leading ./ and a trailing / are the same prefix');
+
+  const windows = updateTask(board, card.id, { writeScopes: 'a\\b' }, { actor: HUMAN, now: NOW });
+  assert.deepEqual(windows.writeScopes, ['a/b'], 'a backslash is a separator, not a second path');
+
+  assert.throws(() => updateTask(board, card.id, { writeScopes: ['/etc'] }, { actor: HUMAN, now: NOW }), InvalidError);
+  assert.throws(() => updateTask(board, card.id, { writeScopes: ['../up'] }, { actor: HUMAN, now: NOW }), InvalidError);
+  assert.throws(() => updateTask(board, card.id, { writeScopes: [''] }, { actor: HUMAN, now: NOW }), InvalidError);
+  assert.deepEqual(getTask(board, card.id)?.writeScopes, ['a/b'], 'a refused scope changed nothing');
+
+  const cleared = updateTask(board, card.id, { writeScopes: [] }, { actor: HUMAN, now: NOW });
+  assert.deepEqual(cleared.writeScopes, []);
+  board.close();
 });

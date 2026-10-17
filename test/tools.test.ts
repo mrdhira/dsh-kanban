@@ -491,3 +491,98 @@ test('the guard accepts a minimal but well-formed schema', () => {
     'a tool that takes no arguments is legal'
   );
 });
+
+// ------------------------------------------------------------------ the write scope
+
+test('write-scope: kanban_create takes one prefix or a list, and kanban_get reports it', async () => {
+  const board = openBoard(':memory:');
+  const list = tools(board);
+  const one = (await call(list, 'kanban_create', { title: 'scoped', writeScope: 'src/store/**' })) as { id: string };
+  assert.deepEqual(getTask(board, one.id)?.writeScopes, ['src/store/**'], 'a single string is accepted');
+
+  const many = (await call(list, 'kanban_create', { title: 'two paths', writeScope: ['src/host/**', 'test/**'] })) as {
+    id: string;
+  };
+  assert.deepEqual(getTask(board, many.id)?.writeScopes, ['src/host/**', 'test/**'], 'and so is a list');
+
+  const got = (await call(list, 'kanban_get', { id: one.id })) as { card: string };
+  assert.match(got.card, /write scope: src\/store\/\*\*/);
+  const listed = (await call(list, 'kanban_list', {})) as { cards: string };
+  assert.match(listed.cards, /scope src\/store\/\*\*/, 'the listing carries the same fact');
+  board.close();
+});
+
+test('write-scope: kanban_update replaces and clears it, and a refused prefix changes nothing', async () => {
+  const board = openBoard(':memory:');
+  const list = tools(board);
+  await call(list, 'kanban_create', { title: 'scoped', writeScope: 'src/**' });
+
+  await call(list, 'kanban_update', { id: 'T-001', action: 'edit', writeScope: ['src/store/**', 'test/**'] });
+  assert.deepEqual(getTask(board, 'T-001')?.writeScopes, ['src/store/**', 'test/**']);
+
+  await assert.rejects(
+    () => call(list, 'kanban_update', { id: 'T-001', action: 'edit', writeScope: ['/etc'] }),
+    InvalidError
+  );
+  assert.deepEqual(
+    getTask(board, 'T-001')?.writeScopes,
+    ['src/store/**', 'test/**'],
+    'the refusal is a refused write, not a partial one'
+  );
+
+  await call(list, 'kanban_update', { id: 'T-001', action: 'edit', writeScope: [] });
+  assert.deepEqual(getTask(board, 'T-001')?.writeScopes, []);
+  board.close();
+});
+
+test('write-scope: the DoR item is satisfied by the scope, and the card leaves the backlog through the tools', async () => {
+  const board = openBoard(':memory:');
+  const list = tools(board);
+  await call(list, 'kanban_create', {
+    title: 'scoped',
+    outcome: 'the gate is honest',
+    acceptance: 'the card moves',
+    estimate: 2,
+    writeScope: 'src/store/**',
+  });
+
+  // The three items a caller must write out are ticked; `write-scope` is answered by the field.
+  for (const check of ['outcome', 'acceptance', 'estimate'] as const) {
+    await call(list, 'kanban_update', { id: 'T-001', action: 'check', gate: 'dor', checkId: check });
+  }
+
+  // The tick the defect said could never land still lands, now that the fact behind it exists.
+  const ticked = (await call(list, 'kanban_update', {
+    id: 'T-001',
+    action: 'check',
+    gate: 'dor',
+    checkId: 'write-scope',
+  })) as { card: string };
+  assert.match(ticked.card, /write-scope ticked/);
+  assert.deepEqual(getTask(board, 'T-001')?.writeScopes, ['src/store/**'], 'and the fact behind it is stored');
+
+  const moved = (await call(list, 'kanban_move', { id: 'T-001', toState: 'ready' })) as { card: string };
+  assert.match(moved.card, /T-001 → ready/);
+  assert.equal(getTask(board, 'T-001')?.state, 'ready');
+  board.close();
+});
+
+test('write-scope: with no scope the tool refusal names the field, not only the unticked check', async () => {
+  const board = openBoard(':memory:');
+  const list = tools(board);
+  await call(list, 'kanban_create', {
+    title: 'unscoped',
+    outcome: 'o',
+    acceptance: 'a',
+    estimate: 1,
+  });
+  for (const check of ['outcome', 'acceptance', 'estimate'] as const) {
+    await call(list, 'kanban_update', { id: 'T-001', action: 'check', gate: 'dor', checkId: check });
+  }
+  await assert.rejects(
+    () => call(list, 'kanban_move', { id: 'T-001', toState: 'ready' }),
+    (error: unknown) =>
+      error instanceof PolicyViolation && /write-scope/.test(error.message) && /writeScope/.test(error.message)
+  );
+  board.close();
+});

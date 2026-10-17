@@ -302,6 +302,7 @@ function applyOp(
           ...(str(input, 'project') === undefined ? {} : { project: str(input, 'project') }),
           ...(str(input, 'workspace') === undefined ? {} : { workspace: str(input, 'workspace') }),
           ...(str(input, 'folder') === undefined ? {} : { folder: str(input, 'folder') }),
+          ...(input.writeScopes === undefined ? {} : { writeScopes: input.writeScopes as readonly string[] | string }),
           ...(num(input, 'estimate') === undefined ? {} : { estimate: num(input, 'estimate') }),
         },
         { actor, now }

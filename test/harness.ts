@@ -401,6 +401,7 @@ export function boardPayload(overrides: Record<string, unknown> = {}): Record<st
     due: null,
     tags: [],
     links: [],
+    writeScopes: [],
     folder: null,
     parentId: null,
     position,

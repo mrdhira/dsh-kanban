@@ -61,8 +61,25 @@ export function isHuman(actor: Actor): boolean {
 }
 
 /** The checklist ids still unticked on a card. */
-export function missingChecks(checked: Readonly<Record<string, unknown>>, required: readonly string[]): string[] {
-  return required.filter((id) => checked[id] === undefined);
+export function missingChecks(
+  checked: Readonly<Record<string, unknown>>,
+  required: readonly string[],
+  /** Ids satisfied by recorded data, so a tick is not the only way in. See `suppliedChecks`. */
+  supplied: readonly string[] = []
+): string[] {
+  return required.filter((id) => checked[id] === undefined && !supplied.includes(id));
+}
+
+/**
+ * The Definition of Ready items a card satisfies with recorded data rather than a tick.
+ *
+ * `write-scope` is the one, and it is the whole defect this exists for: the item named a fact no
+ * `kanban_*` tool could supply, so an agent-authored card was gated on something it could not
+ * provide. A stored scope **is** the named write scope — the tick remains a path (the CLI, a card
+ * imported from the pre-Kanban board, a human's judgement), but the data alone answers the item.
+ */
+export function suppliedChecks(task: { readonly writeScopes: readonly string[] }): readonly string[] {
+  return task.writeScopes.length > 0 ? ['write-scope'] : [];
 }
 
 /** Is this state one of the WIP states — after *started*, before *finished*? */
@@ -153,11 +170,16 @@ export function checkMove(input: MoveCheckInput): PolicyResult {
   // going to do has no future to refine for, and making "throw this away" harder than "do this"
   // is how a backlog fills with things nobody dares delete.
   if (task.state === 'backlog' && toState !== 'dropped') {
-    const missing = missingChecks(task.dor, dow.dor);
+    const missing = missingChecks(task.dor, dow.dor, suppliedChecks(task));
     if (missing.length > 0 && !forcing) {
+      // A refusal has to name something the caller can supply. `write-scope` missing means no scope
+      // is recorded, and the fix is a field, not a judgement call — so it says which field.
+      const scopeHint = missing.includes('write-scope')
+        ? ' — write-scope has no recorded scope: pass writeScope (a workspace-relative file or directory prefix, or a list) to kanban_create or kanban_update'
+        : '';
       return fail(
         'dor-incomplete',
-        `cannot leave backlog: ${missing.length} Definition of Ready check(s) are unticked`,
+        `cannot leave backlog: ${missing.length} Definition of Ready check(s) are unticked${scopeHint}`,
         missing
       );
     }
