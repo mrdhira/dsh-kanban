@@ -7,7 +7,7 @@ refuses the human**.
 
 | surface | who uses it | what it does |
 |---|---|---|
-| **Kanban panel** (`sidebar.panellist` → `main`) | the human | every state as a lane (`dropped` last), drag-and-drop with a keyboard path, a search box, a `New card` disclosure, the card drawer with both checklists, the flow metrics and a collapsible history |
+| **Kanban panel** (`sidebar.panellist` → `main`) | the human | every state as a lane (`dropped` last), drag-and-drop with a keyboard path, a search box, a `New card` button that opens a minimal create dialog, the card drawer with both checklists, the flow metrics and a collapsible history |
 | **`kanban_*` tools** (9) and the `kanban` skill | agents | list, read, create, update/fill, move, drop, sprint, board, metrics — including the card's write scope |
 | **`bin/kanban.mjs`** | the human, scripts, checks | the same verbs from a shell, with distinct exit codes |
 

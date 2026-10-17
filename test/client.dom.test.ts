@@ -1151,13 +1151,13 @@ test('P2.5: a disabled control reads as disabled, and never keeps a chosen look'
   assert.match(styles, /\.kb-lanes-busy, \.kb-lanes-loading \{ color: var\(--dsw-alias-label-secondary, var\(--kb-label-secondary\)\); \}/);
 
   const view = await mountBoard(loadBundle());
-  // The create button is the panel's disabled control: it appears with the `New card` row and is
-  // disabled until the title has content, saying so as an attribute rather than as a colour.
+  // The create button is the panel's disabled control: it appears with the dialog and is disabled
+  // until the title has content, saying so as an attribute rather than as a colour.
   await view.click('[data-action="new-card"]');
   await flush();
   assert.equal(view.find('[data-action="create"]')?.hasAttribute('disabled'), true);
   assert.equal(view.find('[data-action="create"]')?.getAttribute('aria-pressed'), null);
-  await view.type('input[aria-label="New card title"]', 'x');
+  await view.type('[data-field="new-title"]', 'x');
   assert.equal(view.find('[data-action="create"]')?.hasAttribute('disabled'), false);
   view.unmount();
 
@@ -1562,56 +1562,155 @@ test('every CSS variable the panel uses is a theme token the app actually provid
 
 // ------------------------------------------------------------------ pass 2: parity, legibility, craft
 
-test('A1: creation is a title and Add, and the card takes the store defaults', async () => {
+test('A1: the dialog creates a card with the chosen priority and class, then closes', async () => {
   const view = await mountBoard(loadBundle());
   await view.click('[data-action="new-card"]');
   await flush();
-  await view.type('input[aria-label="New card title"]', 'a human card');
+  await view.type('[data-field="new-title"]', 'a human card');
+  await view.type('[data-select="new-priority"]', 'p0-critical');
+  await view.type('[data-select="new-class"]', 'fixed-date');
   await view.click('[data-action="create"]');
   await flush();
 
   const body = lastMutation()?.body as Record<string, unknown> | undefined;
   assert.equal(body?.op, 'create');
-  // The create row is a title and Add. Priority and class are the host's defaults here
-  // (`p2-normal` / `standard`), and the drawer is where the human sets them.
-  assert.deepEqual(body?.input, { title: 'a human card' });
-  assert.equal(view.has('[data-select="new-priority"]'), false, 'no priority control in the create row');
-  assert.equal(view.has('[data-select="new-class"]'), false, 'no class control in the create row');
+  // The dialog is a human surface, so the two fields that were the store's defaults in the
+  // disclosure are chosen here and passed through untouched: title required, priority and class
+  // the human's to set. `state` is not sent -- the store puts a new card in `backlog`.
+  assert.deepEqual(body?.input, { title: 'a human card', priority: 'p0-critical', classOfService: 'fixed-date' });
+  assert.equal(view.has('[data-dialog="new-card"]'), false, 'a successful create closes the dialog');
+  assert.equal(view.has('.kb-scrim'), false, 'and its scrim with it');
   view.unmount();
 });
 
-test('item 6: New card is a disclosure, not a modal — one row, no dialog, focus returned', async () => {
-  // The request was "a button only instead of text field, and a minimal popup modal". The button is
-  // built and the modal is not: PRODUCT.md pins keyboard-first with "focus never trapped", and the
-  // panel's own disclosure primitive already does this. The deviation is Dhira's to overrule.
+test('M1: New card opens a dialog over the board with focus in the title field', async () => {
   const view = await mountBoard(loadBundle());
-  assert.equal(view.has('input[aria-label="New card title"]'), false, 'creation is not always on screen');
-  const toggle = view.find('[data-action="new-card"]');
-  assert.equal(toggle?.getAttribute('aria-expanded'), 'false');
-  assert.equal(toggle?.getAttribute('aria-pressed'), null, 'a disclosure expands, it does not press');
-  assert.equal(view.text().includes('Add'), false, 'and its row is not rendered yet');
+  assert.equal(view.has('[role="dialog"]'), false, 'creation is not always on screen');
+  const button = view.find('[data-action="new-card"]');
+  assert.equal(button?.getAttribute('aria-haspopup'), 'dialog', 'the button names the surface it opens');
+  assert.equal(button?.getAttribute('aria-expanded'), null, 'a dialog opener is not a disclosure');
+  assert.equal(view.has('.kb-new-card'), false, 'and the disclosure row no longer exists');
 
   await view.click('[data-action="new-card"]');
   await flush();
-  assert.equal(view.find('[data-action="new-card"]')?.getAttribute('aria-expanded'), 'true');
-  assert.equal(view.isFocused('[data-field="new-title"]'), true, 'the keyboard follows the reveal');
-  assert.equal(view.findAll('[role="dialog"]').length, 0, 'it is a disclosure, not a dialog');
-  assert.equal(view.findAll('[aria-modal]').length, 0, 'and nothing is modal');
-  const row = view.find('.kb-new-card');
-  assert.ok(row !== null, 'the row is in the page flow');
-  assert.equal(row?.parentElement?.className, 'kb-page', 'directly beneath the toolbar, not an overlay');
-  assert.deepEqual(
-    view.findAll('.kb-new-card > *').map((node) => `${node.tagName}:${node.getAttribute('data-action') ?? ''}`),
-    ['INPUT:', 'BUTTON:create'],
-    'one row: the title field and Add'
-  );
+  const dialog = view.find('[role="dialog"]');
+  assert.ok(dialog !== null, 'the button opens a real dialog');
+  assert.equal(dialog?.getAttribute('aria-modal'), 'true', 'and says the board behind is inert');
+  const labelledBy = dialog?.getAttribute('aria-labelledby');
+  assert.ok(labelledBy !== null, 'the dialog is labelled by its own heading');
+  assert.equal(dialog?.querySelector(`#${labelledBy}`)?.textContent, 'New card');
+  assert.equal(view.has('[data-dialog="new-card"]'), true);
+  assert.equal(view.has('.kb-scrim'), true, 'and it sits on a scrim over the board');
+  assert.equal(view.isFocused('[data-field="new-title"]'), true, 'the keyboard enters the title field');
+  view.unmount();
+});
 
-  await view.type('[data-field="new-title"]', 'from the disclosure');
+test('M2: Escape closes the dialog from any control and returns focus to New card', async () => {
+  const view = await mountBoard(loadBundle());
+  await view.click('[data-action="new-card"]');
+  await flush();
+  // Escape is handled on the document, not on the title field: a reader who has moved to the
+  // priority picker must still be able to leave without finding the button again.
+  await view.focus('[data-select="new-priority"]');
+  await view.key('[data-select="new-priority"]', 'Escape');
+  await flush();
+  assert.equal(view.has('[role="dialog"]'), false, 'Escape closes it');
+  assert.equal(view.has('.kb-scrim'), false);
+  assert.equal(view.isFocused('[data-action="new-card"]'), true, 'and the keyboard is back on the button');
+  view.unmount();
+});
+
+test('M3: Tab and Shift+Tab cycle the dialog controls and never reach the board', async () => {
+  const view = await mountBoard(loadBundle());
+  await view.click('[data-action="new-card"]');
+  await flush();
+  // A title makes Create focusable; an empty form's Create is disabled, and a browser's Tab skips it.
+  await view.type('[data-field="new-title"]', 'cycle test');
+  assert.equal(view.isFocused('[data-field="new-title"]'), true);
+
+  // The first control is the title, so Shift+Tab has nowhere to go in the page: it wraps to the last
+  // control the dialog owns rather than walking back into the toolbar. `press` delivers the keydown
+  // to the document, which is where the dialog listens; see the harness note on React's IE polyfill.
+  await view.press('Tab', { shiftKey: true });
+  assert.equal(view.isFocused('[data-action="create"]'), true, 'Shift+Tab wraps to the last dialog control');
+  assert.equal(document.activeElement?.closest('[data-dialog="new-card"]') !== null, true, 'and it stays inside');
+
+  // Tab on the last control wraps to the first. A browser would otherwise leave the dialog and land
+  // on the board's own controls, which are still in the document behind the scrim.
+  await view.press('Tab');
+  assert.equal(view.isFocused('[data-field="new-title"]'), true, 'Tab wraps to the first dialog control');
+  assert.equal(document.activeElement?.closest('[data-dialog="new-card"]') !== null, true, 'still inside');
+  view.unmount();
+});
+
+test('M4: a title is required — an empty submit is refused and the dialog stays', async () => {
+  const view = await mountBoard(loadBundle());
+  await view.click('[data-action="new-card"]');
+  await flush();
+  assert.equal(view.find('[data-action="create"]')?.hasAttribute('disabled'), true, 'nothing to create yet');
+
   await view.click('[data-action="create"]');
   await flush();
-  assert.equal(lastMutation()?.body.op, 'create');
-  assert.equal(view.has('.kb-new-card'), false, 'using it closes the row again');
-  assert.equal(view.isFocused('[data-action="new-card"]'), true, 'and the keyboard goes back to the toggle');
+  assert.equal(lastMutation(), undefined, 'an empty title sends no mutation');
+  assert.equal(view.has('[role="dialog"]'), true, 'and the dialog is still open');
+
+  await view.type('[data-field="new-title"]', '   ');
+  await view.click('[data-action="create"]');
+  await flush();
+  assert.equal(lastMutation(), undefined, 'whitespace is not a title either');
+  assert.equal(view.has('[role="dialog"]'), true);
+  view.unmount();
+});
+
+test('M5: a host refusal stays visible inside the open dialog', async () => {
+  const view = await mountBoard(loadBundle());
+  setFetch((call) => {
+    if (call.url.includes('/board')) return { status: 200, body: { ok: true, board: fixture(), rev: 7 } };
+    if (call.url.includes('/mutate')) {
+      return { status: 400, body: { ok: false, code: 'refused', message: 'the host refused this card' } };
+    }
+    if (call.url.includes('/task/')) return { status: 200, body: { ok: true, task: null, comments: [], events: [] } };
+    return { status: 404, body: { ok: false, code: 'not-found', message: 'no route' } };
+  });
+
+  await view.click('[data-action="new-card"]');
+  await flush();
+  await view.type('[data-field="new-title"]', 'a card the host refuses');
+  await view.click('[data-action="create"]');
+  await flush();
+  assert.equal(view.has('[role="dialog"]'), true, 'a refusal does not close the dialog');
+  const notice = view.find('[data-dialog="new-card"] .kb-notice');
+  assert.ok(notice !== null, 'the refusal is inside the dialog, not hidden behind the scrim');
+  assert.match(notice.textContent ?? '', /the host refused this card/);
+  view.unmount();
+});
+
+test('M6: the dialog is absent from the DOM while closed, and the disclosure is gone', async () => {
+  const view = await mountBoard(loadBundle());
+  assert.equal(view.has('[data-dialog="new-card"]'), false, 'a closed board carries no dialog');
+  assert.equal(view.findAll('[role="dialog"]').length, 0);
+  assert.equal(view.has('.kb-scrim'), false, 'nor its scrim');
+  assert.equal(view.has('.kb-new-card'), false, 'the old disclosure row is not the create path');
+
+  await view.click('[data-action="new-card"]');
+  await flush();
+  assert.equal(view.has('[data-dialog="new-card"]'), true);
+  assert.equal(view.has('.kb-new-card'), false, 'the disclosure does not come back beside the dialog');
+  await view.key('[data-field="new-title"]', 'Escape');
+  await flush();
+  assert.equal(view.has('[data-dialog="new-card"]'), false, 'and the dialog is gone again after a close');
+  assert.equal(view.has('.kb-scrim'), false);
+  view.unmount();
+});
+
+test('M7: Cancel closes the dialog and returns focus to New card', async () => {
+  const view = await mountBoard(loadBundle());
+  await view.click('[data-action="new-card"]');
+  await flush();
+  await view.click('[data-action="new-card-cancel"]');
+  await flush();
+  assert.equal(view.has('[role="dialog"]'), false);
+  assert.equal(view.isFocused('[data-action="new-card"]'), true);
   view.unmount();
 });
 
@@ -2350,15 +2449,19 @@ test('C9: the drawer leads with one move and keeps the rest of its actions behin
   view.unmount();
 });
 
-test('D1: the create row is a title and Add, and nothing else', async () => {
+test('D1: the dialog carries title, priority and class, and the drawer still sets both', async () => {
   const view = await mountBoard(loadBundle());
   await view.click('[data-action="new-card"]');
   await flush();
-  assert.equal(view.has('input[aria-label="New card title"]'), true);
-  assert.equal(view.has('[data-action="create"]'), true);
-  assert.equal(view.has('[data-select="new-priority"]'), false);
-  assert.equal(view.has('[data-select="new-class"]'), false);
-  // Both are still settable, in the drawer — the control moved, the capability did not.
+  assert.equal(view.has('[data-dialog="new-card"] [data-field="new-title"]'), true);
+  assert.equal(view.has('[data-dialog="new-card"] [data-action="create"]'), true);
+  // The two fields creation used to omit are now on the human's create surface, with the store's
+  // defaults selected, because priority and class are the human's to set.
+  const priority = view.find('[data-select="new-priority"]') as { value?: string } | null;
+  const classOfService = view.find('[data-select="new-class"]') as { value?: string } | null;
+  assert.equal(priority?.value, 'p2-normal');
+  assert.equal(classOfService?.value, 'standard');
+  // Both are still settable in the drawer too -- the capability did not move.
   await view.click('[data-card="T-002"]');
   await flush();
   assert.equal(view.has('[data-drawer="T-002"] [data-select="priority"]'), true);
@@ -2557,7 +2660,7 @@ test('the dark-block detector fails on the pre-fix, comment-split selector list'
 
 // ------------------------------------------------------------------ the third pass: the view row removed
 
-test('F18-overridden: the toolbar is a search box and a create row, and nothing narrows by state', async () => {
+test('F18-overridden: the toolbar is a search box and a New card button, and nothing narrows by state', async () => {
   // The removed select *was* the fresh critique's item 18 — "the human lost single-state narrowing" —
   // and the user overrode it deliberately: *"Remove it, do not group by that, I think it's not common,
   // just view all."* So the assertion is that the panel offers no single-state control at all, and
@@ -2569,14 +2672,14 @@ test('F18-overridden: the toolbar is a search box and a create row, and nothing 
   assert.equal(view.find('.kb-bar [data-select="view-state"]'), null);
   assert.equal(view.findAll('.kb-bar [data-select]').length, 0, 'the toolbar has no picker left of any kind');
 
-  // What the toolbar *does* still carry: the search and `New card`. The title field and `Add` are
-  // the row that toggle reveals, so creation is still one interaction away and not always on screen.
+  // What the toolbar *does* still carry: the search and `New card`. The form is the dialog that
+  // button opens, so creation is still one interaction away and not always on screen.
   assert.equal(view.find('.kb-bar input[type="search"]') !== null, true, 'the search survives');
   assert.equal(view.find('.kb-bar [data-action="new-card"]') !== null, true, 'and so does creation');
   assert.deepEqual(
     view.findAll('.kb-bar [data-action]').map((node) => node.getAttribute('data-action')),
     ['new-card'],
-    'no view or Dismiss action remains in the row'
+    'no view, picker or Dismiss action remains in the row'
   );
   // The two controls the row used to hold are not reachable anywhere else in the panel either.
   assert.equal(view.findAll('[aria-label="Views"]').length, 0);

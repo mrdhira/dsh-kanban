@@ -501,13 +501,13 @@ const STATES: ReadonlyArray<ProbeStateSpec> = [
     ],
   },
   {
-    name: 'new-card',
+    name: 'dialog',
     mode: 'ok',
     steps: [
       {
         setup: "window.__click('[data-action=\"new-card\"]')",
         ready:
-          "document.querySelector('.kb-new-card') !== null && document.querySelector('[data-action=\"new-card\"]').getAttribute('aria-expanded') === 'true'",
+          "document.querySelector('[data-dialog=\"new-card\"]') !== null && document.activeElement === document.querySelector('[data-field=\"new-title\"]')",
       },
     ],
   },

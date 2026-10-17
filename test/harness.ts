@@ -212,7 +212,16 @@ export interface MountedView {
   /** Move the document's focus to a node, the way `Tab` would. */
   focus(selector: string): Promise<void>;
   /** Fire a React-recognised key event. */
-  key(selector: string, key: string, options?: { altKey?: boolean }): Promise<void>;
+  key(selector: string, key: string, options?: { altKey?: boolean; shiftKey?: boolean }): Promise<void>;
+  /**
+   * Fire a keydown on the document itself, which is where the dialog's trap listens.
+   *
+   * A keydown dispatched through React's root on a focused text input trips React 18's IE
+   * value-change polyfill in jsdom (`activeElement.detachEvent` is not a function), a harness
+   * artefact rather than a panel behaviour. The dialog's listener is on the document, so a native
+   * event there is the same listener path without the synthetic-event detour.
+   */
+  press(key: string, options?: { shiftKey?: boolean }): Promise<void>;
   /** Fire the three drag events a drop is built from. */
   drag(fromSelector: string, toSelector: string, clientY?: number): Promise<void>;
   /** Fire only the `dragstart`, so a case can inspect the board while a drag is live. */
@@ -313,7 +322,19 @@ export function mount(loaded: LoadedBundle, registration: Registration, props: R
       const node = container.querySelector(selector);
       assert.ok(node !== null, `expected ${selector} to exist`);
       await act(async () => {
-        node.dispatchEvent(nativeEvent('keydown', { key, altKey: options.altKey === true }));
+        node.dispatchEvent(nativeEvent('keydown', { key, altKey: options.altKey === true, shiftKey: options.shiftKey === true }));
+      });
+    },
+
+    async press(key, options = {}) {
+      await act(async () => {
+        const event = new loaded.dom.window.KeyboardEvent('keydown', {
+          key,
+          shiftKey: options.shiftKey === true,
+          bubbles: true,
+          cancelable: true,
+        });
+        loaded.dom.window.document.dispatchEvent(event);
       });
     },
 

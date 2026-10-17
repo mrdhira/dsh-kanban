@@ -101,7 +101,14 @@ export interface BoardStore {
   /** Open the card's drawer with its drop staged; nothing is sent until the human confirms. */
   stageDrop(id: string, via: StagedDrop['via'], index?: number): Promise<void>;
   notice(message: string | null, kind?: Notice['kind'], missing?: readonly string[]): void;
-  create(title: string, extra?: Record<string, unknown>): Promise<void>;
+  /**
+   * Create a card and say whether the host accepted it.
+   *
+   * The dialog closes on `true` and stays open on `false` with the store's refusal visible, so the
+   * answer has to reach the caller; the old disclosure's row vanished either way, and a refusal left
+   * the human with a notice and no form.
+   */
+  create(title: string, extra?: Record<string, unknown>): Promise<boolean>;
   move(id: string, toState: State, index?: number, options?: MoveOptions): Promise<void>;
   tick(id: string, gate: 'dor' | 'dod', checkId: CheckId, done: boolean): Promise<void>;
   patch(id: string, patch: Record<string, unknown>): Promise<void>;
@@ -292,10 +299,10 @@ export function createBoardStore(transport: BoardTransport, options: BoardStoreO
 
     async create(title, extra) {
       const trimmed = title.trim();
-      if (trimmed.length === 0) return;
+      if (trimmed.length === 0) return false;
       // No optimistic card here: the host assigns the id, and a placeholder with a guessed id would
       // have to be reconciled against the real one. A create is fast enough to wait for.
-      await write('create', { input: { title: trimmed, ...extra } });
+      return write('create', { input: { title: trimmed, ...extra } });
     },
 
     async move(id, toState, index, options) {

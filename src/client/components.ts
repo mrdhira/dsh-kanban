@@ -19,7 +19,7 @@
  * through the panel's persistent `aria-live` region (see `BoardPage` for why there are three).
  */
 import type { ReactElement } from 'react';
-import type { BoardStore, BoardState } from './store.js';
+import type { BoardStore, BoardState, Notice } from './store.js';
 import { selectedTask } from './store.js';
 import { BOARD_STATES, actorKind, ageBand, ageDays, classLabel, columnsOf, formatAge, formatStamp, moveTargets, priorityCode, priorityWord, stateTone, type Column } from './model.js';
 import { beginDrag, dragOver, dropTarget, indexFromPointer, isDropAllowed, keyboardTarget, stagesInsteadOfMoving, type DragState } from './dnd.js';
@@ -36,22 +36,35 @@ export interface ReactLike {
   useSyncExternalStore: <S>(subscribe: (listener: () => void) => () => void, getSnapshot: () => S) => S;
 }
 
+/**
+ * The slice of the page the panel needs, declared here rather than as `Document`.
+ *
+ * The bundle is evaluated in a realm whose globals are not guaranteed to be the browser's own, so a
+ * structural type keeps the panel honest about what it actually touches and lets the DOM harness
+ * hand it a bare document. The dialog needs three more members than the board did: the keydown pair
+ * for the trap and `activeElement` to know whether the keyboard is still inside.
+ */
+export interface PageDocument {
+  readonly visibilityState?: string;
+  readonly head?: { append(node: unknown): unknown };
+  getElementById(id: string): { remove(): void } | null;
+  /**
+   * The document's own window, when it has one.
+   *
+   * Only the commit record uses it. It is optional and stably typed because the harness hands the
+   * panel a bare document, and a panel that required a window would fail there for no reason.
+   */
+  readonly defaultView?: { readonly __mark?: (key: string, value: unknown) => void } | null;
+  addEventListener?(type: 'keydown', listener: (event: KeyboardEvent) => void): void;
+  removeEventListener?(type: 'keydown', listener: (event: KeyboardEvent) => void): void;
+  readonly activeElement?: Element | null;
+}
+
 export interface BoardProps {
   readonly React: ReactLike;
   readonly store?: BoardStore;
   /** Read the page's visibility, so polling stops when the human is not looking. */
-  readonly documentRef?: {
-    readonly visibilityState?: string;
-    readonly head?: { append(node: unknown): unknown };
-    getElementById(id: string): { remove(): void } | null;
-    /**
-     * The document's own window, when it has one.
-     *
-     * Only the commit record uses it. It is optional and stably typed because the harness hands the
-     * panel a bare document, and a panel that required a window would fail there for no reason.
-     */
-    readonly defaultView?: { readonly __mark?: (key: string, value: unknown) => void } | null;
-  };
+  readonly documentRef?: PageDocument;
 }
 
 interface ChildProps {
@@ -176,13 +189,32 @@ function disclosureButton(
   );
 }
 
-function NoticeStrip(props: ChildProps): ReactElement | null {
-  const { React, state, store } = props;
-  if (state.notice === null) return null;
-  const { notice } = state;
+/**
+ * One notice line, rendered either in the page's flow or inside the dialog.
+ *
+ * It takes a notice rather than the whole board state because the dialog needs the same line while
+ * the page's own strip is suppressed behind the scrim: two live regions saying the same sentence
+ * would be read twice, and a refusal the human cannot see is not a refusal. The caller decides where
+ * it lives; the vocabulary stays in one place.
+ */
+function NoticeStrip(props: {
+  readonly React: ReactLike;
+  readonly notice: Notice;
+  readonly store: BoardStore;
+  /**
+   * Whether this line is its own live region. The dialog renders it `false`: the panel's persistent
+   * announcer is what speaks a refusal, because a region inserted with its first message may not be
+   * announced, and the dialog cannot assume the page's announcer will see a line it mounts itself.
+   */
+  readonly live?: boolean;
+}): ReactElement {
+  const { React, notice, store, live = true } = props;
   return React.createElement(
     'div',
-    { className: `kb-notice kb-notice-${notice.kind}`, role: 'status', 'aria-live': 'polite' },
+    {
+      className: `kb-notice kb-notice-${notice.kind}`,
+      ...(live ? { role: 'status', 'aria-live': 'polite' } : {}),
+    },
     React.createElement('span', null, notice.message),
     notice.missing === undefined || notice.missing.length === 0
       ? null
@@ -199,6 +231,241 @@ function NoticeStrip(props: ChildProps): ReactElement | null {
     React.createElement('button', { className: 'kb-btn', type: 'button', onClick: () => store.notice(null) }, 'Dismiss')
   );
 }
+
+/**
+ * The controls a keyboard can reach, in the order the document puts them.
+ *
+ * Read from the dialog at keydown time rather than captured in an effect: a refusal adds the
+ * notice's Dismiss control after the dialog is already open, and a list captured at mount would
+ * leave it outside the cycle. Disabled controls are excluded because a browser cannot focus them,
+ * so a wrapped Tab must skip them too.
+ */
+const FOCUSABLE_SELECTOR =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+function focusableControls(root: HTMLElement): HTMLElement[] {
+  return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
+}
+
+/**
+ * The new-card dialog.
+ *
+ * It is a **modal by behaviour, not by paint**: the scrim only says "the board is waiting", while the
+ * heading, the role and the 1px edge are what identify the surface. Focus enters the title on open,
+ * the two keydown rules below keep Tab and Shift+Tab inside, and Escape closes from any control in
+ * the dialog because the listener is on the document the panel was handed rather than on one field.
+ *
+ * The dialog is mounted only while it is open, so a closed board has no `role="dialog"` and no
+ * hidden form in the DOM. On success the card is the host's; the dialog asks the page to close and
+ * the page puts the keyboard back on the button that opened it. On refusal it stays open with the
+ * store's own notice in front of the fields, because the sentence that says what is missing is the
+ * thing the human has to act on.
+ */
+function NewCardDialog(props: {
+  readonly React: ReactLike;
+  readonly store: BoardStore;
+  readonly notice: Notice | null;
+  readonly documentRef?: PageDocument;
+  readonly onAnnounce: (message: string) => void;
+  readonly onClose: () => void;
+}): ReactElement {
+  const { React, store, notice, documentRef, onAnnounce, onClose } = props;
+  const [title, setTitle] = React.useState('');
+  const [priority, setPriority] = React.useState<Priority>('p2-normal');
+  const [classOfService, setClassOfService] = React.useState<ClassOfService>('standard');
+  const [busy, setBusy] = React.useState(false);
+  /**
+   * Whether *this* dialog has asked the host and been refused.
+   *
+   * The store's notice is shared with the whole panel, so an unrelated line from before the dialog
+   * opened must not appear above the title. Only a refusal produced by this form is shown inside it;
+   * the page's own strip comes back when the dialog closes.
+   */
+  const [attempted, setAttempted] = React.useState(false);
+  const dialogRef = React.useRef<HTMLDivElement | null>(null);
+  const titleRef = React.useRef<HTMLInputElement | null>(null);
+  /** The page can ask to close while a create is in flight; a state write after that is a no-op. */
+  const live = React.useRef(true);
+  /** The parent's close callback changes every poll; the listener must not re-register for it. */
+  const closeRef = React.useRef(onClose);
+  closeRef.current = onClose;
+
+  React.useEffect(() => {
+    titleRef.current?.focus();
+  }, []);
+
+  React.useEffect(() => {
+    live.current = true;
+    return () => {
+      live.current = false;
+    };
+  }, []);
+
+  React.useEffect(() => {
+    const doc = documentRef;
+    if (doc?.addEventListener === undefined) return;
+    const onKeyDown = (event: KeyboardEvent): void => {
+      const dialog = dialogRef.current;
+      if (dialog === null) return;
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeRef.current();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const controls = focusableControls(dialog);
+      if (controls.length === 0) {
+        event.preventDefault();
+        return;
+      }
+      const first = controls[0] as HTMLElement;
+      const last = controls[controls.length - 1] as HTMLElement;
+      const active = doc.activeElement ?? null;
+      // The board's controls are never in the cycle: a wrap at either end, or a keyboard that
+      // arrived from outside, lands on a control this dialog owns.
+      if (active === null || !dialog.contains(active)) {
+        event.preventDefault();
+        first.focus();
+        return;
+      }
+      if (event.shiftKey && active === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    doc.addEventListener('keydown', onKeyDown);
+    return () => doc.removeEventListener?.('keydown', onKeyDown);
+  }, [documentRef]);
+
+  const submit = async (): Promise<void> => {
+    const trimmed = title.trim();
+    if (trimmed.length === 0 || busy) return;
+    setAttempted(true);
+    setBusy(true);
+    const created = await store.create(trimmed, { priority, classOfService });
+    if (live.current) setBusy(false);
+    if (created) closeRef.current();
+    else {
+      // The dialog's own notice is silent (it has no live role); the panel's persistent region says
+      // the refusal once, so a reader who cannot see the box is not left with a closed dialog and no
+      // reason. `missing` travels with the sentence exactly as the page strip prints it.
+      const refused = store.getSnapshot().notice;
+      if (refused !== null) {
+        onAnnounce(
+          refused.missing === undefined || refused.missing.length === 0
+            ? refused.message
+            : `${refused.message} — missing: ${refused.missing.join(', ')}`
+        );
+      }
+    }
+  };
+
+  return React.createElement(
+    'div',
+    { className: 'kb-scrim' },
+    React.createElement(
+      'div',
+      {
+        className: 'kb-dialog',
+        role: 'dialog',
+        'aria-modal': 'true',
+        'aria-labelledby': 'new-card-heading',
+        'data-dialog': 'new-card',
+        ref: dialogRef,
+      },
+      React.createElement('h2', { className: 'kb-dialog-title', id: 'new-card-heading' }, 'New card'),
+      React.createElement('p', { className: 'kb-dialog-lead' }, 'Creates a card in Backlog.'),
+      notice === null || !attempted ? null : React.createElement(NoticeStrip, { React, notice, store, live: false }),
+      React.createElement(
+        'label',
+        { className: 'kb-field' },
+        React.createElement('span', { className: 'kb-label' }, 'title'),
+        React.createElement('input', {
+          className: 'kb-input',
+          type: 'text',
+          'data-field': 'new-title',
+          ref: titleRef,
+          value: title,
+          placeholder: 'what needs doing?',
+          'aria-required': 'true',
+          required: true,
+          onChange: (event: { target: { value: string } }) => setTitle(event.target.value),
+          onKeyDown: (event: { key: string; preventDefault(): void }) => {
+            if (event.key !== 'Enter') return;
+            event.preventDefault();
+            void submit();
+          },
+        })
+      ),
+      React.createElement(
+        'div',
+        { className: 'kb-field-row' },
+        React.createElement(
+          'label',
+          { className: 'kb-field' },
+          React.createElement('span', { className: 'kb-label' }, 'priority'),
+          React.createElement(
+            'select',
+            {
+              className: 'kb-input',
+              'data-select': 'new-priority',
+              value: priority,
+              onChange: (event: { target: { value: string } }) => setPriority(event.target.value as Priority),
+            },
+            ...PRIORITIES.map((entry) => React.createElement('option', { key: entry, value: entry }, PRIORITY_LABEL[entry]))
+          )
+        ),
+        React.createElement(
+          'label',
+          { className: 'kb-field' },
+          React.createElement('span', { className: 'kb-label' }, 'class of service'),
+          React.createElement(
+            'select',
+            {
+              className: 'kb-input',
+              'data-select': 'new-class',
+              value: classOfService,
+              onChange: (event: { target: { value: string } }) => setClassOfService(event.target.value as ClassOfService),
+            },
+            ...CLASSES_OF_SERVICE.map((entry) => React.createElement('option', { key: entry, value: entry }, CLASS_LABEL[entry]))
+          )
+        )
+      ),
+      React.createElement(
+        'div',
+        { className: 'kb-dialog-actions' },
+        React.createElement(
+          'button',
+          {
+            className: 'kb-btn',
+            type: 'button',
+            'data-action': 'new-card-cancel',
+            onClick: () => closeRef.current(),
+          },
+          'Cancel'
+        ),
+        React.createElement(
+          'button',
+          {
+            className: 'kb-btn',
+            type: 'button',
+            'data-action': 'create',
+            disabled: title.trim().length === 0 || busy,
+            onClick: () => {
+              void submit();
+            },
+          },
+          'Create card'
+        )
+      )
+    )
+  );
+}
+
+
 
 interface MetricsProps extends ChildProps {
   readonly open: boolean;
@@ -1327,17 +1594,15 @@ export function BoardPage(props: BoardProps): ReactElement {
   const state = React.useSyncExternalStore(store.subscribe, store.getSnapshot);
   const [drag, setDrag] = React.useState<DragState | null>(null);
   const [announcement, setAnnouncement] = React.useState('');
-  const [draft, setDraft] = React.useState('');
-  /** The new-card disclosure: closed until the human asks for the one row it reveals. */
+  /** The new-card dialog: absent from the DOM entirely until the button opens it. */
   const [newCardOpen, setNewCardOpen] = React.useState(false);
-  const newTitleRef = React.useRef<HTMLInputElement | null>(null);
   const newCardToggleRef = React.useRef<HTMLButtonElement | null>(null);
   /**
-   * What each disclosure is showing.
+   * What each remaining disclosure is showing.
    *
    * The flow history lives here rather than in a `<details>` so the revealed half renders inline, in
-   * the row it belongs to. `New card` follows the same primitive: a toggle in the toolbar and one row
-   * beneath it, never a modal and never a focus trap.
+   * the row it belongs to: a metrics strip, a drawer's move row. Creation is no longer one of these;
+   * it is the panel's one dialog, and its keyboard contract lives in that component.
    */
   const [metricsOpen, setMetricsOpen] = React.useState(false);
   /** Live card nodes, so a closing drawer can return focus to the card it was opened from. */
@@ -1348,15 +1613,16 @@ export function BoardPage(props: BoardProps): ReactElement {
   React.useEffect(() => store.start(), [store]);
 
   /**
-   * Opening `New card` puts the keyboard in the field it revealed.
+   * Close the dialog and put the keyboard back where it came from.
    *
-   * The toggle keeps the focus when it closes, so the row is a disclosure in the page flow and not a
-   * modal: nothing is trapped, `Tab` walks out of the row like any other, and closing it returns the
-   * keyboard to the control that opened it rather than to the document.
+   * All three closes route through here — Escape, Cancel, and a create the host accepted — so the
+   * return is one behaviour rather than three that happen to agree. The button is mounted for the
+   * whole life of the page, so it can take the focus before the dialog's own commit lands.
    */
-  React.useEffect(() => {
-    if (newCardOpen) newTitleRef.current?.focus();
-  }, [newCardOpen]);
+  const closeNewCard = (): void => {
+    setNewCardOpen(false);
+    newCardToggleRef.current?.focus();
+  };
 
   /**
    * Record what this mount has committed, for whoever is watching the page rather than the store.
@@ -1518,8 +1784,8 @@ export function BoardPage(props: BoardProps): ReactElement {
       // do not group by that, I think it's not common, just view all"*: the `Board | Ageing | All |
       // Dropped` row and the `all states` select that followed it are both removed, and the board now
       // draws every state as a lane with `dropped` last, so nothing needs a control to make one
-      // reachable. The panel's toolbar is a search box and `New card`; the title field and `Add` are
-      // the row that toggle reveals, and they are not on screen until it is used.
+      // reachable. The panel's toolbar is a search box and `New card`, and the button opens the one
+      // dialog; the form is not on screen until it is asked for.
       //
       // Two notes for whoever reads this next. The select was the fresh critique's item 18 — "the
       // human lost single-state narrowing" — and removing it is a deliberate override, not an
@@ -1530,57 +1796,32 @@ export function BoardPage(props: BoardProps): ReactElement {
       // saved views are untouched at the data level (`board.db`, the `views` payload field, the store
       // and the host API), so nothing here changes what an agent or the CLI can ask for.
       React.createElement('span', { className: 'kb-spacer' }),
-      disclosureButton(React, {
-        label: 'New card',
-        open: newCardOpen,
-        action: 'new-card',
-        onToggle: () => setNewCardOpen(!newCardOpen),
-        nodeRef: (node) => {
-          newCardToggleRef.current = node;
+      // A dialog opener is not a disclosure: no caret, no `aria-expanded`, and the state it opens is
+      // announced by the dialog's own role. `aria-haspopup` is the one hint the button can give
+      // before it is pressed.
+      React.createElement(
+        'button',
+        {
+          className: 'kb-btn',
+          type: 'button',
+          'data-action': 'new-card',
+          'aria-haspopup': 'dialog',
+          ref: (node: HTMLButtonElement | null) => {
+            newCardToggleRef.current = node;
+          },
+          onClick: () => setNewCardOpen(true),
         },
-      })
+        'New card'
+      )
     ),
-    // Creation is a disclosure, not a dialog: one row beneath the toolbar, only while it is used,
-    // with no overlay, no focus trap and no new dependency. The field takes the row's width and
-    // `Add` sits at its content edge, so the row is a form rather than a small control in a large
-    // empty bar. The two fields creation used to carry (priority, class) are the store's defaults —
-    // `p2-normal` / `standard` — and the drawer sets both one step later.
+    // Creation is the panel's one modal: the form is mounted only while the dialog is open, and the
+    // dialog itself owns the focus trap, the Escape key and the refusal line. The page keeps the
+    // keyboard's return path, because it owns the button that opened it.
     newCardOpen
-      ? React.createElement(
-          'div',
-          { className: 'kb-bar kb-new-card' },
-          React.createElement('input', {
-            className: 'kb-input',
-            type: 'text',
-            placeholder: 'new card…',
-            'aria-label': 'New card title',
-            'data-field': 'new-title',
-            ref: newTitleRef,
-            value: draft,
-            onChange: (event: { target: { value: string } }) => setDraft(event.target.value),
-          }),
-          React.createElement(
-            'button',
-            {
-              className: 'kb-btn',
-              type: 'button',
-              'data-action': 'create',
-              disabled: draft.trim().length === 0,
-              onClick: () => {
-                const title = draft;
-                setDraft('');
-                setNewCardOpen(false);
-                // The row the button lived in is gone the moment it succeeds, so the keyboard goes
-                // back to the control that opened it instead of falling to the document body.
-                newCardToggleRef.current?.focus();
-                void store.create(title);
-              },
-            },
-            'Add'
-          )
-        )
-      : null,
-    React.createElement(NoticeStrip, child),
+      ? null
+      : state.notice === null
+        ? null
+        : React.createElement(NoticeStrip, { React, notice: state.notice, store }),
     // A partly-read board says so on screen, for the same reason the generated file does: the
     // metrics are computed from the cards that were read.
     state.payload?.truncated == null
@@ -1640,7 +1881,19 @@ export function BoardPage(props: BoardProps): ReactElement {
         ),
     // Keyed by card, so opening a different card hands focus to the new drawer rather than reusing
     // the old one's focus-return target.
-    task === undefined ? null : React.createElement(Drawer, { ...child, task, key: task.id })
+    task === undefined ? null : React.createElement(Drawer, { ...child, task, key: task.id }),
+    // Last child, and present only while open: the scrim and the dialog are one commit, so the board
+    // never paints a dialog without its scrim or the other way round.
+    newCardOpen
+      ? React.createElement(NewCardDialog, {
+          React,
+          store,
+          notice: state.notice,
+          documentRef,
+          onAnnounce,
+          onClose: closeNewCard,
+        })
+      : null
   );
 }
 

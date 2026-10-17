@@ -29,6 +29,7 @@ export const STYLES = `
    84 probe states read 'font-size: 16px' with 'bodySize: 16px'. The family is deliberately left
    alone: the panel declares none and inherits the app's face, which is the documented position. */
 .kb-page { display: flex; flex-direction: column; height: 100%; min-height: 0; gap: 10px; padding: 14px 16px 18px;
+  position: relative;
   font-size: 13px; line-height: 1.5; color: var(--dsw-alias-label-primary, inherit); }
 /* The craft floor's "browser surfaces": the parts this panel never drew still carry its design. The app
    provides a scrollbar ladder and a document-selection fill; both are the app's own tokens, each with a
@@ -317,11 +318,30 @@ input[type="number"].kb-input { min-width: 76px; }
    clear of the new edge. */
 .kb-drawer .kb-bar > input.kb-input,
 .kb-drawer .kb-bar > select.kb-input { flex: 1 1 auto; }
-/* The new-card row is a disclosure's revealed half, not the toolbar: its field takes the row's
-   width and 'Add' sits at its content edge, so a form that appears only while used reads as a form
-   rather than as one small control in a large empty bar. Scoped to this row; the toolbar and the
-   drawer's own rows keep their existing layout. */
-.kb-new-card > input.kb-input { flex: 1 1 auto; }
+/* The one modal surface. The scrim is the app's primary label at 30% transparency, not a black
+   rectangle: label-primary is near-black in light and near-white in dark, so one declaration dims
+   the board in both themes. The app's --dsw-alias-bg-overlay was tried first and is the wrong role
+   here -- in light it resolves to a near-white surface tint (#e9ecf2), which is invisible over a
+   white board. The scrim is absolute inside the page rather than fixed to the viewport, so it covers
+   the board it belongs to and the dialog is centred over that board. The dialog is opaque on the
+   app's base tier and closed by the sheet's own 1px hairline -- the scrim is never the only thing
+   saying "dialog", because the heading and the edge are on the surface itself. No entrance motion:
+   the dialog appears in the same frame as the scrim, which is the sheet's standing rule for every
+   reveal, and the reduced-motion block therefore has nothing extra to cancel. */
+.kb-scrim { position: absolute; inset: 0; z-index: 10; display: flex; align-items: center; justify-content: center;
+  padding: 16px; background: color-mix(in srgb, var(--dsw-alias-label-primary, #0f1115) 30%, transparent); }
+.kb-dialog { width: 100%; max-width: 360px; max-height: 100%; overflow: auto;
+  background: var(--dsw-alias-bg-base, #fff); color: var(--dsw-alias-label-primary, inherit);
+  border: 1px solid var(--dsw-alias-border-l1, var(--kb-border-l1));
+  border-radius: var(--kb-radius-panel, 10px); padding: 14px 16px;
+  display: flex; flex-direction: column; gap: 10px; }
+.kb-dialog-title { font-size: 16px; font-weight: 600; margin: 0; line-height: 1.3; }
+.kb-dialog-lead { margin: 0; color: var(--dsw-alias-label-secondary, var(--kb-label-secondary)); }
+.kb-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.kb-field .kb-input { width: 100%; }
+.kb-field-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.kb-field-row > .kb-field { flex: 1 1 120px; }
+.kb-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
 /* A placeholder is text, and the browser's own placeholder styling dims it for you: Chrome applies
    roughly 0.54 of the element's opacity on top of whatever colour the author set, so the passing
    label-secondary above arrived as 2.27:1 in light (and 3.35-4.33:1 in dark). Setting "opacity: 1"

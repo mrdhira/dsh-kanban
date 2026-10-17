@@ -106,6 +106,8 @@ respected.**
 
 - Every board action reachable without a pointer — lane moves, card open/close, checklist ticks,
   comment, block, drop — sharing the pointer's gates rather than a parallel code path.
-- Visible focus on every interactive control; focus never trapped in the drawer.
+- Visible focus on every interactive control; focus is never trapped in the drawer or on the board, and
+  may be trapped only while a modal dialog is open. Closing a dialog always returns focus to the
+  control that opened it, and `Escape` always closes it.
 - AA contrast for text and for the state colours that carry meaning (priority, ageing, refusal).
 - `prefers-reduced-motion` honoured: no transition is load-bearing.
