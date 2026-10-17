@@ -9,7 +9,7 @@ engine.
 | surface | who uses it | what it does |
 |---|---|---|
 | **Kanban panel** (`sidebar.panellist` → `main`) | the human | every state as a lane (`dropped` last), drag-and-drop with a keyboard path, a search box, the card drawer with both checklists, templates, the flow metrics |
-| **`kanban_*` tools** (9) and the `kanban` skill | agents | list, read, create, update/fill, move, drop, sprint, board, metrics |
+| **`kanban_*` tools** (9) and the `kanban` skill | agents | list, read, create, update/fill, move, drop, sprint, board, metrics — including the card's write scope |
 | **`bin/kanban.mjs`** | the human, scripts, checks | the same verbs from a shell, with distinct exit codes |
 
 The board lives at `$DSH_HOME/tasks/board.db`. `$DSH_HOME/tasks/todo.md` is a **generated view** of
@@ -25,6 +25,12 @@ the full rationale.
 - `backlog → ready → in-progress → review → done`, plus `dropped`; `blocked` is a flag, so blocked
   work still counts as WIP.
 - **Definition of Ready** gates every exit from `backlog` except dropping.
+- **A write scope is data, and agents should pass one.** `kanban_create` and `kanban_update` take
+  `writeScope` — a workspace-relative file or directory prefix, or a list of them (the same shape
+  the Agent Teams board's `write_scopes` carries). A recorded scope *is* the DoR's `write-scope`
+  item, so the row reads as named and the card may leave `backlog`; a card with none is refused by
+  name, because a gate that demands a fact no caller can supply is not a gate. The CLI and a human
+  may still tick the item for a scope recorded elsewhere (the pre-Kanban board, a task folder).
 - **Definition of Done** gates `done`; work that does not meet it returns to the backlog.
 - **WIP control**: `in-progress` 2, `review` 1, ready queue 5. `expedite` is the only exception.
 - **Only the human** sets a priority or a class of service, and only the human may except a gate —
@@ -112,3 +118,48 @@ here rather than implied:
   malformed one is refused at the store rather than stored: a non-numeric WIP limit used to disable
   WIP control silently, and a `dor` that was not an array made every move throw. Fields the payload
   does not mention keep their stored value; a field that is present and wrong refuses the whole write.
+
+## What it looks like
+
+The board, six lanes and every state reachable, in the app's own two themes. Nothing is styled against
+the app: every colour is one of its theme tokens with a literal fallback.
+
+| light | dark |
+|---|---|
+| ![The board in the light theme](docs/screenshots/board-light.png) | ![The board in the dark theme](docs/screenshots/board-dark.png) |
+
+A card's drawer: one primary move, the rest behind a disclosure, the Definition of Ready as checkable
+rows, and the history collapsed until asked for.
+
+| light | dark |
+|---|---|
+| ![A card's drawer in the light theme](docs/screenshots/drawer-light.png) | ![A card's drawer in the dark theme](docs/screenshots/drawer-dark.png) |
+
+## The flow
+
+A card moves through five states, and two gates decide whether it may. `dropped` is off the workflow --
+it is where a card goes when it leaves, and the way back is the drawer's own primary move.
+
+```mermaid
+flowchart LR
+  B[backlog] -->|"DoR complete"| R[ready]
+  R --> I[in-progress]
+  I --> V[review]
+  V -->|"DoD complete"| D[done]
+  B -.->|"dropped, with a reason"| X[dropped]
+  R -.-> X
+  I -.-> X
+  V -.-> X
+  X -->|"the drawer's move"| B
+```
+
+- **Definition of Ready** -- outcome, acceptance, write scope, estimate. A card in `backlog` cannot be
+  pulled into `ready` until every item is ticked, and the refusal names the ones that are missing.
+- **Definition of Done** -- evidence, tests, docs, links, and no unverified claims, checked when a card
+  enters `done`.
+- **Work in progress** -- `in-progress` and `review` carry their own limits. Only a human may set the
+  limits, the priority or the class of service, and only `expedite` passes a limit that is otherwise full.
+- **Dropping a card needs a written reason.** Dragging one onto `dropped` refuses the gesture and hands
+  the move to the drawer, because that is the only place the reason can be typed.
+- **Every move is an event**, so the flow metrics (cycle time, throughput, the service-level expectation)
+  are computed from what happened rather than from what a column says.
