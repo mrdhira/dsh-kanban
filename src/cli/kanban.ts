@@ -69,13 +69,17 @@ interface Parsed {
   readonly command: string;
   readonly positional: readonly string[];
   readonly flags: Readonly<Record<string, string | boolean>>;
+  /** Flags that may be given more than once, in the order they were written. */
+  readonly lists: Readonly<Record<string, readonly string[]>>;
 }
 
 const BOOLEAN_FLAGS = new Set(['json', 'force', 'off', 'blocked', 'all', 'help', 'no-mirror']);
+const LIST_FLAGS = new Set(['write-scope']);
 
 function parseArgs(argv: readonly string[]): Parsed {
   const positional: string[] = [];
   const flags: Record<string, string | boolean> = {};
+  const lists: Record<string, string[]> = {};
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index] as string;
     if (!token.startsWith('--')) {
@@ -85,7 +89,13 @@ function parseArgs(argv: readonly string[]): Parsed {
     const body = token.slice(2);
     const equals = body.indexOf('=');
     if (equals > 0) {
-      flags[body.slice(0, equals)] = body.slice(equals + 1);
+      const name = body.slice(0, equals);
+      const value = body.slice(equals + 1);
+      if (LIST_FLAGS.has(name)) {
+        (lists[name] ??= []).push(value);
+      } else {
+        flags[name] = value;
+      }
       continue;
     }
     if (BOOLEAN_FLAGS.has(body)) {
@@ -96,10 +106,14 @@ function parseArgs(argv: readonly string[]): Parsed {
     if (value === undefined || value.startsWith('--')) {
       throw new InvalidError(`--${body} needs a value`);
     }
-    flags[body] = value;
+    if (LIST_FLAGS.has(body)) {
+      (lists[body] ??= []).push(value);
+    } else {
+      flags[body] = value;
+    }
     index += 1;
   }
-  return { command: positional.shift() ?? 'help', positional, flags };
+  return { command: positional.shift() ?? 'help', positional, flags, lists };
 }
 
 function flagString(parsed: Parsed, name: string): string | undefined {
@@ -113,6 +127,22 @@ function flagNumber(parsed: Parsed, name: string): number | undefined {
   const value = Number(raw);
   if (!Number.isFinite(value)) throw new InvalidError(`--${name} must be a number`);
   return value;
+}
+
+/**
+ * A flag that may be repeated, or `undefined` when it was not given.
+ *
+ * An empty value is the clear: `--write-scope=` (or `--write-scope ''`) means "no prefixes", the
+ * same way an empty `--tags` empties the tag list. Several values are passed through **untouched**,
+ * including a bad one in the middle: normalizing or filtering here would duplicate the store's rule
+ * and let the CLI accept a scope the board would refuse. The store refuses it, and the existing
+ * error path turns that into exit 5.
+ */
+function flagList(parsed: Parsed, name: string): readonly string[] | undefined {
+  const values = parsed.lists[name];
+  if (values === undefined) return undefined;
+  if (values.length === 1 && values[0] === '') return [];
+  return values;
 }
 
 /**
@@ -162,9 +192,10 @@ const USAGE = `dsh-kanban — the Kanban board from the command line
   kanban add --title "…" [--outcome …] [--acceptance …] [--description …]
              [--priority p0-critical…p4-someday] [--assignee who] [--project p]
              [--workspace w] [--estimate n] [--folder path] [--template id] [--tags a,b]
+             [--write-scope prefix]…
   kanban update <id> [--title …] [--outcome …] [--acceptance …] [--description …]
              [--assignee …] [--project …] [--workspace …] [--estimate n] [--tags a,b]
-             [--priority …] [--class …] [--rev n]
+             [--priority …] [--class …] [--rev n] [--write-scope prefix]…
   kanban move <id> <state> [--position n] [--reason …] [--force] [--rev n]
   kanban check <id> <dor|dod> <check-id> [--off]
   kanban block <id> --reason "…"        kanban unblock <id>
@@ -183,6 +214,9 @@ const USAGE = `dsh-kanban — the Kanban board from the command line
   --actor <who>  human | cli | agent:<session-id>   (default human)
   --json         machine-readable output
   --no-mirror    do not rewrite the generated Markdown after a write
+  --write-scope <prefix>  workspace-relative write prefix; repeat for a list.
+                          An empty value (--write-scope=) clears the scope on update,
+                          the same way an empty --tags clears the tags.
 
 Exit: 0 ok · 1 usage · 2 not found · 3 policy refusal · 4 revision conflict · 5 invalid`;
 
@@ -255,6 +289,7 @@ function commandAdd(parsed: Parsed, board: ReturnType<typeof openBoard>): void {
     throw new InvalidError(`no template ${templateId}; known: ${templates.map((entry) => entry.id).join(', ')}`);
   }
   const tags = flagString(parsed, 'tags')?.split(',').filter(Boolean);
+  const writeScopes = flagList(parsed, 'write-scope');
   const task = createTask(
     board,
     {
@@ -272,6 +307,7 @@ function commandAdd(parsed: Parsed, board: ReturnType<typeof openBoard>): void {
       ...(flagString(parsed, 'folder') === undefined ? {} : { folder: flagString(parsed, 'folder') as string }),
       ...(flagNumber(parsed, 'estimate') === undefined ? {} : { estimate: flagNumber(parsed, 'estimate') as number }),
       ...(tags === undefined ? {} : { tags }),
+      ...(writeScopes === undefined ? {} : { writeScopes }),
     },
     { actor: actorFrom(parsed), now: new Date() }
   );
@@ -283,6 +319,7 @@ function commandUpdate(parsed: Parsed, board: ReturnType<typeof openBoard>): voi
   if (id === undefined) throw new InvalidError('update needs a card id');
   const tags = flagString(parsed, 'tags')?.split(',').filter(Boolean);
   const links = flagString(parsed, 'link');
+  const writeScopes = flagList(parsed, 'write-scope');
   const patch: Record<string, unknown> = {};
   for (const key of ['title', 'outcome', 'acceptance', 'description', 'assignee', 'project', 'workspace', 'folder']) {
     const value = flagString(parsed, key);
@@ -292,6 +329,7 @@ function commandUpdate(parsed: Parsed, board: ReturnType<typeof openBoard>): voi
   if (flagString(parsed, 'class') !== undefined) patch.classOfService = flagString(parsed, 'class');
   if (flagNumber(parsed, 'estimate') !== undefined) patch.estimate = flagNumber(parsed, 'estimate');
   if (tags !== undefined) patch.tags = tags;
+  if (writeScopes !== undefined) patch.writeScopes = writeScopes;
   if (links !== undefined) {
     const link: Link = links.startsWith('http') ? { kind: 'url', ref: links } : { kind: 'file', ref: links };
     patch.links = [link];

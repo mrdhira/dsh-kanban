@@ -184,8 +184,11 @@ no sprints, so this is Scrumban and the sprint layer is optional data. The full 
   `writeScope` — a workspace-relative file or directory prefix, or a list of them (the same shape the
   Agent Teams board's `write_scopes` carries). A recorded scope *is* the DoR's `write-scope` item, so
   the row reads as named and the card may leave `backlog`; a card with none is refused by name,
-  because a gate that demands a fact no caller can supply is not a gate. The CLI and a human may
-  still tick the item for a scope recorded elsewhere (the pre-Kanban board, a task folder).
+  because a gate that demands a fact no caller can supply is not a gate. The CLI takes the same fact
+  as a repeatable `--write-scope` prefix, so a card created or edited from a shell is not gated on a
+  field the shell cannot set; `--write-scope=` (an empty value) clears it on `update`, the same way an
+  empty `--tags` clears the tags. A human may still tick the item for a scope recorded elsewhere (the
+  pre-Kanban board, a task folder).
 - **Definition of Done** gates `done`; work that does not meet it returns to the backlog.
 - **WIP control**: `in-progress` 2, `review` 1, ready queue 5. `expedite` is the only exception.
 - **Only the human** sets a priority or a class of service, and only the human may except a gate — and

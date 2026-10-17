@@ -114,6 +114,64 @@ test('the human may set a priority and a class of service', () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+test('write-scope: create takes two --write-scope values, and the stored scope satisfies the DoR', () => {
+  const { dir, run } = sandbox();
+  const added = run(
+    'add',
+    '--title',
+    'scoped',
+    '--id',
+    'T-001',
+    '--write-scope',
+    'src/store/**',
+    '--write-scope',
+    'test/**'
+  );
+  assert.equal(added.status, 0);
+  const shown = JSON.parse(run('show', 'T-001', '--json').stdout) as { task: { writeScopes: string[] } };
+  assert.deepEqual(shown.task.writeScopes, ['src/store/**', 'test/**'], 'both occurrences are stored, in order');
+
+  // Everything the caller can answer in prose is ticked; `write-scope` is answered by the field.
+  for (const check of ['outcome', 'acceptance', 'estimate'] as const) {
+    assert.equal(run('check', 'T-001', 'dor', check).status, 0);
+  }
+  const moved = run('move', 'T-001', 'ready');
+  assert.equal(moved.status, 0, moved.stderr);
+  assert.match(moved.stdout, /T-001 → ready/);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('write-scope: update replaces with repeated values, and an empty value clears it', () => {
+  const { dir, run } = sandbox();
+  run('add', '--title', 'scoped', '--write-scope', 'src/**');
+  assert.equal(run('update', 'T-001', '--write-scope', 'src/host/**', '--write-scope', 'scripts/**').status, 0);
+  let shown = JSON.parse(run('show', 'T-001', '--json').stdout) as { task: { writeScopes: string[] } };
+  assert.deepEqual(shown.task.writeScopes, ['src/host/**', 'scripts/**'], 'an update replaces the whole list');
+
+  const cleared = run('update', 'T-001', '--write-scope=');
+  assert.equal(cleared.status, 0, cleared.stderr);
+  shown = JSON.parse(run('show', 'T-001', '--json').stdout) as { task: { writeScopes: string[] } };
+  assert.deepEqual(shown.task.writeScopes, [], 'an empty value is the clear, like an empty --tags');
+  assert.match(run('show', 'T-001').stdout, /DoR\s+missing [^\n]*write-scope/, 'the item needs a tick again');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('write-scope: the store refuses an escaping prefix, surfaced through exit code 5', () => {
+  const { dir, run } = sandbox();
+  const escaped = run('add', '--title', 'bad scope', '--write-scope', '/etc');
+  assert.equal(escaped.status, 5);
+  assert.match(escaped.stderr, /writeScopes "\/etc" is not a workspace-relative path prefix/);
+  assert.doesNotMatch(run('list').stdout, /T-001/, 'the refused create wrote nothing');
+
+  run('add', '--title', 'a card');
+  const parent = run('update', 'T-001', '--write-scope', '../up');
+  assert.equal(parent.status, 5);
+  assert.match(parent.stderr, /is not a workspace-relative path prefix/);
+  const shown = JSON.parse(run('show', 'T-001', '--json').stdout) as { task: { writeScopes: string[] } };
+  assert.deepEqual(shown.task.writeScopes, [], 'a refused update changed nothing');
+  rmSync(dir, { recursive: true, force: true });
+});
+
 test('a sprint of 31 days can be created and started', () => {
   const { dir, run } = sandbox();
   const created = run('sprint', 'create', '--name', 'Sprint 1', '--goal', 'the board works', '--start', '2026-10-01', '--end', '2026-11-01');
