@@ -47,7 +47,7 @@
  */
 import { spawnSync } from 'node:child_process';
 import { openSync, closeSync, mkdirSync, readSync, readFileSync, statSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 

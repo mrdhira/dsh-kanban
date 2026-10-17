@@ -102,7 +102,7 @@
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -476,12 +476,13 @@ const STATES: ReadonlyArray<ProbeStateSpec> = [
     ],
   },
   {
-    name: 'host',
+    name: 'new-card',
     mode: 'ok',
     steps: [
       {
-        setup: "window.__click('[data-action=\"more-host\"]')",
-        ready: "document.querySelector('.kb-metrics') !== null && document.querySelector('.kb-metrics').textContent.indexOf('rev 7') !== -1",
+        setup: "window.__click('[data-action=\"new-card\"]')",
+        ready:
+          "document.querySelector('.kb-new-card') !== null && document.querySelector('[data-action=\"new-card\"]').getAttribute('aria-expanded') === 'true'",
       },
     ],
   },
@@ -515,7 +516,9 @@ const STATES: ReadonlyArray<ProbeStateSpec> = [
         setup: "window.__longComment = true; window.__click('[data-card=\"T-007\"]')",
         ready: "document.querySelector('[data-drawer=\"T-007\"]') !== null",
       },
-      { ready: "document.querySelectorAll('.kb-list').length >= 3" },
+      // The card record and the comment are the visible lists; history starts closed behind its
+      // toggle, so this state waits on two lists plus the history control rather than the old three.
+      { ready: "document.querySelectorAll('.kb-list').length >= 2 && document.querySelector('[data-action=\"history\"]') !== null" },
     ],
     scroll: 'drawer-comments',
   },
@@ -872,7 +875,7 @@ window.addEventListener('error', function (event) {
       if (typeof current.className === 'string' && current.className.indexOf('kb-') !== -1) {
         var first = current.className.split(' ')[0];
         if (current.classList && current.classList.contains('kb-group')) {
-          var label = current.querySelector(':scope > .kb-dim');
+          var label = current.querySelector(':scope > .kb-label') || current.querySelector(':scope > .kb-dim');
           parts.unshift(first + (label === null ? '' : ':' + (label.textContent || '').trim().split(' ')[0]));
         } else {
           parts.unshift(first);

@@ -143,29 +143,36 @@ test('a lane past its limit says so', async () => {
   view.unmount();
 });
 
-test('the header states the count plainly, and the host line waits behind its disclosure in the strip', async () => {
+test('the header states the count plainly, and the Host control is gone whole', async () => {
+  // Item 1: the `Host` disclosure printed `rev 7 . host http://127.0.0.1:19387 . source` in the
+  // healthy state. The URL is in the address bar, `rev` is developer vocabulary the panel itself
+  // demoted, and nothing is left that a human can act on. The control and its reveal are removed;
+  // the error notice below is the surface that keeps the diagnosis, because that is where it is read.
   const view = await mountBoard(loadBundle());
-  // Every card the board holds has a lane now, so the front line says the plain count: the "showing X
-  // of Y" form is for a search or a truncated read, not for a state the board declines to draw.
   const head = (): string => view.find('.kb-head')?.textContent ?? '';
   assert.match(head(), /6 cards/);
   assert.equal(head().includes('showing'), false, 'nothing is hidden, so nothing is claimed to be');
   assert.equal(head().includes('rev'), false, 'no revision on the front line');
-  assert.equal(view.text().includes('host http://localhost'), false, 'the host line is not on the front');
 
-  // Moved beside `More metrics`: it is the same kind of slow, technical fact, and it lives where the
-  // metrics disclosure lives rather than in the header's most prominent row.
-  const disclosure = view.find('.kb-metrics [data-action="more-host"]');
-  assert.ok(disclosure !== null, 'the host line lives in the metrics strip now');
-  assert.equal(disclosure.getAttribute('aria-expanded'), 'false');
-  assert.equal(view.find('.kb-head [data-action="more-host"]'), null, 'and it left the header');
-
-  await view.click('[data-action="more-host"]');
-  await flush();
-  assert.equal(view.find('[data-action="more-host"]')?.getAttribute('aria-expanded'), 'true');
-  assert.match(view.text(), /host http:\/\/localhost/, 'opening it still names the transport');
-  assert.match(view.text(), /rev 7/, 'and the revision moved here rather than off the panel');
+  assert.equal(view.has('[data-action="more-host"]'), false, 'the Host disclosure is removed, not hidden');
+  assert.equal(view.text().includes('host http://localhost'), false, 'and its reveal went with it');
+  assert.equal(view.text().includes('rev 7'), false, 'the revision is not printed anywhere on the panel');
+  assert.equal(view.findAll('.kb-metrics [data-action]').map((node) => node.getAttribute('data-action')).join(','), 'more-metrics', 'the strip has one disclosure');
   view.unmount();
+
+  // Nothing actionable was lost: the error notice still names the URL, the origin, the document and
+  // the base, which is the only place any of it is a diagnosis rather than a decoration.
+  setFetch(() => ({ status: 500, body: { ok: false, message: 'boom' } }));
+  const failed = mount(loadBundle(), loadBundle().slot('main'), { store: freshStore(loadBundle()) });
+  await flush();
+  const notice = failed.find('.kb-notice-error');
+  const copy = notice?.textContent ?? '';
+  assert.match(copy, /board unavailable: boom/, 'the failure itself');
+  assert.match(copy, /tried http:\/\/localhost\/api\/kanban/, 'the URL attempted');
+  assert.match(copy, /document http: http:\/\/localhost/, 'what the document says it is');
+  assert.match(copy, /host origin from location\.origin/, 'where the host origin came from');
+  assert.match(copy, /base http:\/\/localhost\//, 'and the document base');
+  failed.unmount();
 });
 
 test('every state has a lane, dropped last, and the board draws everything it holds', async () => {
@@ -201,24 +208,28 @@ test('two numbers lead the metrics and the history opens behind one control', as
   const view = await mountBoard(loadBundle());
   const front = view.text();
   assert.match(front, /WIP 2\/3/);
-  assert.match(front, /Oldest 1\.5d vs 3d SLE/);
+  // Item 2: the basis moved onto the SLE reading on the front line instead of being restated in the
+  // disclosure, and `mean` left with it: median and p85 are two readings, not three spellings of one.
+  assert.match(front, /Oldest 1\.5d vs 3d SLE \(from default\)/);
   assert.equal(view.findAll('.kb-metric-lead').length, 2, 'exactly two items lead the scan');
   assert.equal(front.includes('Cycle'), false, 'the history is not competing with them');
   assert.equal(front.includes('Throughput'), false);
   assert.equal(front.includes('p85'), false, 'the 85th percentile is not on the front line');
+  assert.equal(front.includes('mean'), false, 'and neither is the mean');
   assert.equal(view.find('[data-action="more-metrics"]')?.getAttribute('aria-expanded'), 'false');
 
   await view.click('[data-action="more-metrics"]');
   await flush();
   assert.equal(view.find('[data-action="more-metrics"]')?.getAttribute('aria-expanded'), 'true');
   const opened = view.text();
-  // The disclosure holds all three cycle readings, not the median alone: the payload has them, and
-  // the history behind the disclosure is exactly where a second and third reading belong. The store's
-  // own field name (`p85`) is not a word anyone reads, so the reading is spelled out; the SLE says
-  // where its number came from instead of printing the field value `guess`.
-  assert.match(opened, /Cycle median 3d · 85th percentile 3d · mean 3d/);
+  // Two cycle readings and throughput. The store's own field name (`p85`) is not a word anyone
+  // reads, so the reading is spelled out; the SLE says where its number came from on the front line,
+  // and the disclosure no longer restates it.
+  assert.match(opened, /Cycle median 3d · 85th percentile 3d/);
+  assert.equal(opened.includes('mean'), false, 'the third reading is gone');
   assert.match(opened, /Throughput 1\/7d · 1\/30d/);
-  assert.match(opened, /SLE 85% ≤ 3d \(from default\)/);
+  assert.equal(opened.includes('85% ≤'), false, 'the disclosure no longer restates the SLE');
+  assert.equal((opened.match(/from default/g) ?? []).length, 1, 'the basis is stated once, on the front line');
   assert.equal(opened.includes('p85'), false, 'no store field name reaches the screen');
   assert.equal(opened.includes('guess'), false, 'and neither does the untranslated source');
   view.unmount();
@@ -232,7 +243,8 @@ test('a metric the store cannot compute is an em dash, not a zero', async () => 
   const view = await mountBoard(loadBundle(), { ...fixture(), metrics });
   await view.click('[data-action="more-metrics"]');
   await flush();
-  assert.match(view.text(), /Cycle median —d · 85th percentile —d · mean —d/);
+  assert.match(view.text(), /Cycle median —d · 85th percentile —d/);
+  assert.equal(view.text().includes('mean'), false, 'the mean is not printed at all');
   view.unmount();
 });
 
@@ -254,6 +266,16 @@ test('typing in the search box narrows the board', async () => {
   await flush();
   assert.equal(view.has('[data-card="T-003"]'), true);
   assert.equal(view.has('[data-card="T-005"]'), false, 'a filtered-out card is gone');
+  view.unmount();
+});
+
+test('item 5: the search placeholder is the words Dhira asked for', async () => {
+  // He asked for this placeholder explicitly. It introduces a second noun — the panel says "card"
+  // in nine other places — which is recorded as an open question in DESIGN.md rather than silently
+  // lived with. His instruction wins over the lens's one-noun argument.
+  const view = await mountBoard(loadBundle());
+  assert.equal(view.find('input[type="search"]')?.getAttribute('placeholder'), 'Search task\u2026');
+  assert.equal(view.find('input[type="search"]')?.getAttribute('aria-label'), 'Search tasks');
   view.unmount();
 });
 
@@ -1129,8 +1151,10 @@ test('P2.5: a disabled control reads as disabled, and never keeps a chosen look'
   assert.match(styles, /\.kb-lanes-busy, \.kb-lanes-loading \{ color: var\(--dsw-alias-label-secondary, var\(--kb-label-secondary\)\); \}/);
 
   const view = await mountBoard(loadBundle());
-  // The create button is the panel's always-present disabled control: it is disabled until the title
-  // has content, and it says so as an attribute rather than as a colour.
+  // The create button is the panel's disabled control: it appears with the `New card` row and is
+  // disabled until the title has content, saying so as an attribute rather than as a colour.
+  await view.click('[data-action="new-card"]');
+  await flush();
   assert.equal(view.find('[data-action="create"]')?.hasAttribute('disabled'), true);
   assert.equal(view.find('[data-action="create"]')?.getAttribute('aria-pressed'), null);
   await view.type('input[aria-label="New card title"]', 'x');
@@ -1233,15 +1257,15 @@ test('P3.8: pressed and open share one treatment, and the open state carries a s
   const toggle = view.find('[data-drawer="T-001"] .kb-check');
   assert.equal(toggle?.getAttribute('aria-pressed'), 'true', 'a ticked checklist row is pressed');
   assert.equal(toggle?.getAttribute('aria-expanded'), null, 'a toggle presses');
-  const disclosure = view.find('[data-action="more-host"]');
+  const disclosure = view.find('[data-action="more-metrics"]');
   assert.equal(disclosure?.getAttribute('aria-expanded'), 'false');
   assert.equal(disclosure?.getAttribute('aria-pressed'), null, 'a disclosure expands');
   assert.equal(disclosure?.querySelector('svg.kb-more-caret') !== null, true, 'and it is drawn with a caret');
 
-  await view.click('[data-action="more-host"]');
+  await view.click('[data-action="more-metrics"]');
   await flush();
-  assert.equal(view.find('[data-action="more-host"]')?.getAttribute('aria-expanded'), 'true');
-  assert.equal(view.find('[data-action="more-host"]')?.textContent, 'Host', 'the label never renames itself');
+  assert.equal(view.find('[data-action="more-metrics"]')?.getAttribute('aria-expanded'), 'true');
+  assert.equal(view.find('[data-action="more-metrics"]')?.textContent, 'More metrics', 'the label never renames itself');
   view.unmount();
 });
 
@@ -1535,6 +1559,8 @@ test('every CSS variable the panel uses is a theme token the app actually provid
 
 test('A1: creation is a title and Add, and the card takes the store defaults', async () => {
   const view = await mountBoard(loadBundle());
+  await view.click('[data-action="new-card"]');
+  await flush();
   await view.type('input[aria-label="New card title"]', 'a human card');
   await view.click('[data-action="create"]');
   await flush();
@@ -1546,6 +1572,41 @@ test('A1: creation is a title and Add, and the card takes the store defaults', a
   assert.deepEqual(body?.input, { title: 'a human card' });
   assert.equal(view.has('[data-select="new-priority"]'), false, 'no priority control in the create row');
   assert.equal(view.has('[data-select="new-class"]'), false, 'no class control in the create row');
+  view.unmount();
+});
+
+test('item 6: New card is a disclosure, not a modal — one row, no dialog, focus returned', async () => {
+  // The request was "a button only instead of text field, and a minimal popup modal". The button is
+  // built and the modal is not: PRODUCT.md pins keyboard-first with "focus never trapped", and the
+  // panel's own disclosure primitive already does this. The deviation is Dhira's to overrule.
+  const view = await mountBoard(loadBundle());
+  assert.equal(view.has('input[aria-label="New card title"]'), false, 'creation is not always on screen');
+  const toggle = view.find('[data-action="new-card"]');
+  assert.equal(toggle?.getAttribute('aria-expanded'), 'false');
+  assert.equal(toggle?.getAttribute('aria-pressed'), null, 'a disclosure expands, it does not press');
+  assert.equal(view.text().includes('Add'), false, 'and its row is not rendered yet');
+
+  await view.click('[data-action="new-card"]');
+  await flush();
+  assert.equal(view.find('[data-action="new-card"]')?.getAttribute('aria-expanded'), 'true');
+  assert.equal(view.isFocused('[data-field="new-title"]'), true, 'the keyboard follows the reveal');
+  assert.equal(view.findAll('[role="dialog"]').length, 0, 'it is a disclosure, not a dialog');
+  assert.equal(view.findAll('[aria-modal]').length, 0, 'and nothing is modal');
+  const row = view.find('.kb-new-card');
+  assert.ok(row !== null, 'the row is in the page flow');
+  assert.equal(row?.parentElement?.className, 'kb-page', 'directly beneath the toolbar, not an overlay');
+  assert.deepEqual(
+    view.findAll('.kb-new-card > *').map((node) => `${node.tagName}:${node.getAttribute('data-action') ?? ''}`),
+    ['INPUT:', 'BUTTON:create'],
+    'one row: the title field and Add'
+  );
+
+  await view.type('[data-field="new-title"]', 'from the disclosure');
+  await view.click('[data-action="create"]');
+  await flush();
+  assert.equal(lastMutation()?.body.op, 'create');
+  assert.equal(view.has('.kb-new-card'), false, 'using it closes the row again');
+  assert.equal(view.isFocused('[data-action="new-card"]'), true, 'and the keyboard goes back to the toggle');
   view.unmount();
 });
 
@@ -2061,6 +2122,8 @@ test('C9: the drawer leads with one move and keeps the rest of its actions behin
 
 test('D1: the create row is a title and Add, and nothing else', async () => {
   const view = await mountBoard(loadBundle());
+  await view.click('[data-action="new-card"]');
+  await flush();
   assert.equal(view.has('input[aria-label="New card title"]'), true);
   assert.equal(view.has('[data-action="create"]'), true);
   assert.equal(view.has('[data-select="new-priority"]'), false);
@@ -2267,12 +2330,13 @@ test('F18-overridden: the toolbar is a search box and a create row, and nothing 
   assert.equal(view.find('.kb-bar [data-select="view-state"]'), null);
   assert.equal(view.findAll('.kb-bar [data-select]').length, 0, 'the toolbar has no picker left of any kind');
 
-  // What the toolbar *does* still carry: the search, the title field and `Add`. Nothing else.
+  // What the toolbar *does* still carry: the search and `New card`. The title field and `Add` are
+  // the row that toggle reveals, so creation is still one interaction away and not always on screen.
   assert.equal(view.find('.kb-bar input[type="search"]') !== null, true, 'the search survives');
-  assert.equal(view.find('.kb-bar [data-action="create"]') !== null, true, 'and so does creation');
+  assert.equal(view.find('.kb-bar [data-action="new-card"]') !== null, true, 'and so does creation');
   assert.deepEqual(
     view.findAll('.kb-bar [data-action]').map((node) => node.getAttribute('data-action')),
-    ['create'],
+    ['new-card'],
     'no view or Dismiss action remains in the row'
   );
   // The two controls the row used to hold are not reachable anywhere else in the panel either.
@@ -2346,8 +2410,16 @@ test('F23: the history prints the actor kind and keeps the raw session id in a t
   await view.click('[data-card="T-003"]');
   await flush();
 
+  // Item 4: history is a closed disclosure now, so the rows are not on screen until asked for.
+  const toggle = view.find('[data-drawer="T-003"] [data-action="history"]');
+  assert.equal(toggle?.getAttribute('aria-expanded'), 'false', 'history starts closed');
+  assert.match(toggle?.textContent ?? '', /history 2/, 'and says how much is behind it');
+  assert.equal(view.findAll('[data-drawer="T-003"] .kb-mono').length, 0, 'no history row costs height at rest');
+
+  await view.click('[data-drawer="T-003"] [data-action="history"]');
+  await flush();
   const rows = view.findAll('[data-drawer="T-003"] .kb-mono');
-  assert.equal(rows.length, 2, 'both events are drawn');
+  assert.equal(rows.length, 2, 'both events are drawn once opened');
   const agentRow = rows[0];
   assert.ok(agentRow !== undefined);
   assert.match(agentRow.textContent ?? '', /purged/, 'the event kind is still printed');
@@ -2361,13 +2433,78 @@ test('F23: the history prints the actor kind and keeps the raw session id in a t
   view.unmount();
 });
 
+test('item 3: one label treatment for sections, a lighter tier in a row, and a rule per section', async () => {
+  const styles = readFileSync(new URL('../src/client/styles.ts', import.meta.url), 'utf8');
+  // The label treatment is 12px monospace, secondary, with slight tracking; the in-row tier is the
+  // inherited face at 13px, so a value never reads as a heading.
+  assert.match(styles, /\.kb-label \{[^}]*font-family: ui-monospace[^}]*font-size: 12px[^}]*letter-spacing: 0\.04em/);
+  assert.match(styles, /\.kb-inline-label \{[^}]*font-size: 13px/);
+  assert.match(styles, /\.kb-drawer > \.kb-group, \.kb-drawer > \.kb-checks \{[^}]*border-top: 1px solid/);
+
+  const view = await mountBoard(loadBundle());
+  await view.click('[data-card="T-003"]');
+  await flush();
+  const drawer = view.find('[data-drawer="T-003"]');
+  const labels = [...(drawer?.querySelectorAll('.kb-label') ?? [])].map((node) => node.textContent);
+  for (const name of ['detail', 'move', 'Definition of Ready', 'Definition of Done', 'card', 'comment']) {
+    assert.equal(labels.includes(name), true, `${name} is a section label`);
+  }
+  // `priority` and `class` are not section labels; they name the control beside them and take the
+  // lighter in-row tier, so the value in the select is not mistaken for a heading.
+  const inline = [...(drawer?.querySelectorAll('.kb-inline-label') ?? [])].map((node) => node.textContent);
+  assert.deepEqual(inline.slice(0, 2), ['priority', 'class']);
+  assert.equal(labels.includes('priority'), false, 'an in-row label is not a section label');
+  view.unmount();
+});
+
+test('item 4: a run of identical history rows prints once, with its count and its span', async () => {
+  // Six `updated -> Backlog (agent)` rows are a loop, not six facts, and the drawer is capped at
+  // 260px: a run is printed once with the count and the time it covers.
+  setFetch((call) => {
+    if (call.url.includes('/board')) {
+      const payload = fixture();
+      return { status: 200, body: { ok: true, board: payload, rev: payload.rev } };
+    }
+    if (call.url.includes('/task/')) {
+      const events = Array.from({ length: 6 }, (_, index) => ({
+        id: index + 1,
+        at: `2026-10-15T12:0${String(index)}:00.000Z`,
+        actor: 'agent:01JABC',
+        taskId: 'T-003',
+        kind: 'updated',
+        fromState: 'ready',
+        toState: 'backlog',
+        payload: {},
+      }));
+      return { status: 200, body: { ok: true, task: null, comments: [], events } };
+    }
+    return { status: 404, body: {} };
+  });
+  const view = mount(loadBundle(), loadBundle().slot('main'), { store: freshStore(loadBundle()) });
+  await flush();
+  await view.click('[data-card="T-003"]');
+  await flush();
+
+  assert.equal(view.findAll('[data-drawer="T-003"] .kb-mono').length, 0, 'the run is behind the toggle');
+  assert.match(view.find('[data-action="history"]')?.textContent ?? '', /history 6/, 'the label counts the events');
+  await view.click('[data-action="history"]');
+  await flush();
+
+  const rows = view.findAll('[data-drawer="T-003"] .kb-mono');
+  assert.equal(rows.length, 1, 'six identical rows collapse to one');
+  const text = rows[0]?.textContent ?? '';
+  assert.match(text, /^6 × updated → Backlog \(agent\)/, 'the count and the run are one line');
+  assert.match(text, /2026-10-15 12:00:00Z – 2026-10-15 12:05:00Z/, 'and the span it covers');
+  view.unmount();
+});
+
 test('F24: the metrics speak words, not store fields — 85th percentile, from history or default', async () => {
   const view = await mountBoard(loadBundle()); // the fixture's SLE source is the store's `guess`
   await view.click('[data-action="more-metrics"]');
   await flush();
   const opened = view.text();
-  assert.match(opened, /Cycle median 3d · 85th percentile 3d · mean 3d/);
-  assert.match(opened, /SLE 85% ≤ 3d \(from default\)/, 'a declared SLE says so in words');
+  assert.match(opened, /Cycle median 3d · 85th percentile 3d/);
+  assert.match(opened, /Oldest 1\.5d vs 3d SLE \(from default\)/, 'a declared SLE says so in words');
   assert.equal(opened.includes('p85'), false, 'the store field name is not printed');
   assert.equal(opened.includes('guess'), false, 'nor is `guess`');
   view.unmount();
@@ -2380,10 +2517,125 @@ test('F24: the metrics speak words, not store fields — 85th percentile, from h
     sle: { p: 0.85, days: 3, source: 'history', basis: 6 },
   };
   const history = await mountBoard(loadBundle(), { ...fixture(), metrics });
-  await history.click('[data-action="more-metrics"]');
-  await flush();
-  assert.match(history.text(), /SLE 85% ≤ 3d \(from history\)/);
+  assert.match(history.text(), /SLE \(from history\)/);
   history.unmount();
+});
+
+test('item 2: the metrics row shares one baseline and its history follows its own toggle', async () => {
+  const styles = readFileSync(new URL('../src/client/styles.ts', import.meta.url), 'utf8');
+  // Measured before: the row was `align-items: normal`, the 26px disclosure boxes stretched, and the
+  // 12px text sat at the top of each box — baselineSpread 3.59375px in all 72 measured rows (every
+  // state, theme and width where the strip renders). Baseline is the declaration; the probe re-measures.
+  assert.match(styles, /\.kb-metrics \{[^}]*align-items: baseline/, 'the strip aligns on one ink line');
+
+  const view = await mountBoard(loadBundle());
+  await view.click('[data-action="more-metrics"]');
+  await flush();
+  const items = view.findAll('.kb-metrics > *').map((node) => node.textContent ?? '');
+  assert.deepEqual(
+    items,
+    [
+      'WIP 2/3',
+      'Oldest 1.5d vs 3d SLE (from default) · 0 past',
+      'More metrics',
+      'Cycle median 3d · 85th percentile 3d',
+      'Throughput 1/7d · 1/30d',
+    ],
+    'the revealed half renders straight after its own toggle, and nothing sits between them'
+  );
+  view.unmount();
+});
+
+test('item 7: the error screen has one recovery, and the sprint sits with the board', async () => {
+  setFetch(() => ({ status: 500, body: { ok: false, message: 'boom' } }));
+  const error = mount(loadBundle(), loadBundle().slot('main'), { store: freshStore(loadBundle()) });
+  await flush();
+  assert.equal(error.has('.kb-notice-error'), true);
+  assert.equal(error.find('[data-action="retry-board"]')?.textContent, 'Retry', 'the recovery sits beside the explanation');
+  assert.equal((error.find('.kb-head')?.textContent ?? '').includes('Refresh'), false, 'and the header does not repeat it under another name');
+  assert.equal(error.find('.kb-head button'), null, 'one recovery, one name, on one surface');
+  error.unmount();
+
+  // The sprint is board-level metadata: it belongs above the lanes, not wedged between the lane row
+  // and a card's own surface where it reads as drawer metadata.
+  const payload = boardPayload();
+  const withSprint = {
+    ...payload,
+    sprints: [
+      {
+        id: 'S-001',
+        name: 'Sprint 1',
+        goal: 'Measure every surface before changing one',
+        start: '2026-10-08T00:00:00.000Z',
+        end: '2026-10-29T00:00:00.000Z',
+        state: 'active',
+        createdAt: '2026-10-08T00:00:00.000Z',
+        closedAt: null,
+      },
+    ],
+  };
+  const view = await mountBoard(loadBundle(), withSprint);
+  const sprint = view.find('.kb-chip-kb');
+  const lanes = view.find('.kb-lanes');
+  assert.ok(sprint !== null && lanes !== null, 'both the sprint bar and the lanes render');
+  assert.equal((sprint.compareDocumentPosition(lanes) & 4) === 4, true, 'the sprint precedes the lanes in document order');
+  assert.match(view.text(), /S-001 active/, 'and it still says which sprint');
+  view.unmount();
+});
+
+test('item 7: a narrowed board scopes the WIP lead, and a null age is not zero days', async () => {
+  const view = await mountBoard(loadBundle());
+  const lead = (prefix: string): string =>
+    view.findAll('.kb-metric-lead').find((node) => (node.textContent ?? '').startsWith(prefix))?.textContent ?? '';
+  assert.equal(lead('WIP'), 'WIP 2/3', 'nothing is narrowed, so nothing needs scoping');
+
+  await view.type('input[type="search"]', 'T-003');
+  await flush();
+  // The metrics are board-wide while the lanes are filtered; `of 6` is the board the 2 describes,
+  // so `WIP 2/3` no longer reads as the one card the search left on screen.
+  assert.equal(lead('WIP'), 'WIP 2/3 of 6', 'the narrowed board says which board the number counts');
+  view.unmount();
+
+  const payload = boardPayload();
+  const metrics = { ...(payload.metrics as Record<string, unknown>), ageing: { count: 0, oldestDays: null } };
+  const empty = await mountBoard(loadBundle(), { ...fixture(), metrics });
+  const oldest = empty.findAll('.kb-metric-lead').find((node) => (node.textContent ?? '').startsWith('Oldest'));
+  assert.equal(oldest?.textContent, 'Oldest —', 'a missing age is an em dash, never "—d"');
+  empty.unmount();
+});
+
+test('item 7: a comment prints the actor kind and keeps the raw session id in a title', async () => {
+  setFetch((call) => {
+    if (call.url.includes('/board')) {
+      const payload = fixture();
+      return { status: 200, body: { ok: true, board: payload, rev: payload.rev } };
+    }
+    if (call.url.includes('/task/')) {
+      return {
+        status: 200,
+        body: {
+          ok: true,
+          task: null,
+          events: [],
+          comments: [
+            { id: 1, at: '2026-10-15T12:00:00.000Z', actor: 'agent:session-83dd', taskId: 'T-003', body: 'the poll is idle' },
+          ],
+        },
+      };
+    }
+    return { status: 404, body: {} };
+  });
+  const view = mount(loadBundle(), loadBundle().slot('main'), { store: freshStore(loadBundle()) });
+  await flush();
+  await view.click('[data-card="T-003"]');
+  await flush();
+
+  const row = view.find('[data-drawer="T-003"] .kb-list span[title]');
+  const text = row?.textContent ?? '';
+  assert.match(text, /^agent: the poll is idle$/, 'the row names the kind, not the machine token');
+  assert.equal(text.includes('session-83dd'), false, 'the raw session id does not reach the screen');
+  assert.equal(row?.getAttribute('title'), 'agent:session-83dd', 'the id is one hover away');
+  view.unmount();
 });
 
 test('F25: a lane’s accessible name carries its limit and its warning', async () => {

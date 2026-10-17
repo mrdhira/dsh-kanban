@@ -264,7 +264,25 @@ export const STYLES = `
 /* A select is a value picker, not a text box: it does not need the search field's width. */
 select.kb-input { min-width: 0; padding-right: 4px; }
 input[type="number"].kb-input { min-width: 76px; }
-/* The drawer's form rows take the drawer's width. Measured before this rule, the comment field was
+/* One label treatment, and only for section labels: 12px monospace in the secondary tone with a
+   little tracking. Before this, a section label, an in-row field label and a value were all one
+   'kb-dim' span, so 'detail', 'priority' and the select beside it were the same kind of mark. The
+   12px mono shape belongs to the drawer's sections (detail, move, card, comment, the two gates,
+   history); an in-row label takes 'kb-inline-label' below and stays in the inherited face. */
+.kb-label { color: var(--dsw-alias-label-secondary, var(--kb-label-secondary));
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.5; letter-spacing: 0.04em; }
+/* An in-row label names the control beside it ('priority', 'class', 'position', 'except'). It is a
+   lighter tier than a section label on purpose: the inherited face at the body's 13px, in the
+   secondary tone, so a value never reads as a heading, a heading never reads as a field name, and
+   the row it labels keeps the 3.25px top/bottom spread a 26px control beside 13px text produces,
+   rather than the 4.00px a 12px label added. */
+.kb-inline-label { color: var(--dsw-alias-label-secondary, var(--kb-label-secondary)); font-size: 13px; line-height: 1.5; }
+/* Section boundaries are ruled, not spaced. The drawer's only cue used to be 9px between groups
+   against 3px inside one, and the human read the result as "no firm lines separating one component
+   from another". Every drawer section takes the sheet's own hairline; the 7px below it is the
+   spacing the sheet already uses under a fold's rule, so nothing grew a bigger gap instead. */
+.kb-drawer > .kb-group, .kb-drawer > .kb-checks { border-top: 1px solid var(--dsw-alias-border-l1, var(--kb-border-l1)); padding-top: 7px; }
+/* The drawer form rows take the drawer's width. Measured before this rule, the comment field was
    140px in a 927px row and every drawer bar's last control stopped 486-756px short of the row's right
    content edge (88 findings over 6 states): a form at 15% of its container does not read as narrow-
    on-purpose, it reads as broken. Only the drawer's own rows are affected -- the page toolbar and the
@@ -272,6 +290,11 @@ input[type="number"].kb-input { min-width: 76px; }
    clear of the new edge. */
 .kb-drawer .kb-bar > input.kb-input,
 .kb-drawer .kb-bar > select.kb-input { flex: 1 1 auto; }
+/* The new-card row is a disclosure's revealed half, not the toolbar: its field takes the row's
+   width and 'Add' sits at its content edge, so a form that appears only while used reads as a form
+   rather than as one small control in a large empty bar. Scoped to this row; the toolbar and the
+   drawer's own rows keep their existing layout. */
+.kb-new-card > input.kb-input { flex: 1 1 auto; }
 /* A placeholder is text, and the browser's own placeholder styling dims it for you: Chrome applies
    roughly 0.54 of the element's opacity on top of whatever colour the author set, so the passing
    label-secondary above arrived as 2.27:1 in light (and 3.35-4.33:1 in dark). Setting "opacity: 1"
@@ -281,7 +304,11 @@ input[type="number"].kb-input { min-width: 76px; }
    pseudo-element needs the value restated where it has a rule of its own. */
 .kb-input::placeholder, .kb-input::-webkit-input-placeholder { color: var(--dsw-alias-label-secondary, var(--kb-label-secondary)); opacity: 1; }
 .kb-input:hover { border-color: var(--dsw-alias-border-l2, var(--dsw-alias-border-l1, rgba(128,128,128,0.5))); }
-.kb-metrics { display: flex; gap: 14px; flex-wrap: wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+/* Baseline, not the initial 'normal'. Measured on the real browser, the 26px control boxes stretched
+   the row and the 12px metric text sat at the top of its box: baselineSpread was 3.59px in every
+   state, theme and width (72 measured rows). Baseline puts the lead's numbers, the disclosure's
+   label and the revealed facts on one ink line however tall their boxes are. */
+.kb-metrics { display: flex; gap: 14px; flex-wrap: wrap; align-items: baseline; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
   font-variant-numeric: tabular-nums;
   /* The strip's own height is reserved while it has no facts to print. The component renders the
      empty box during the first read instead of nothing, because an absent child is what moved the

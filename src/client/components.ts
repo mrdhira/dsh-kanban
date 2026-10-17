@@ -21,7 +21,7 @@
 import type { ReactElement } from 'react';
 import type { BoardStore, BoardState } from './store.js';
 import { selectedTask } from './store.js';
-import { BOARD_STATES, actorKind, ageBand, ageDays, classLabel, columnsOf, formatAge, formatPercent, formatStamp, moveTargets, priorityCode, priorityWord, type Column } from './model.js';
+import { BOARD_STATES, actorKind, ageBand, ageDays, classLabel, columnsOf, formatAge, formatStamp, moveTargets, priorityCode, priorityWord, type Column } from './model.js';
 import { beginDrag, dragOver, dropTarget, indexFromPointer, isDropAllowed, keyboardTarget, stagesInsteadOfMoving, type DragState } from './dnd.js';
 import { API_PREFIX } from './api.js';
 import { STYLES, STYLE_ID } from './styles.js';
@@ -140,6 +140,8 @@ function disclosureButton(
     readonly action: string;
     readonly ariaLabel?: string;
     readonly onToggle: () => void;
+    /** Lets the caller put the keyboard back on the toggle when the revealed row closes. */
+    readonly nodeRef?: (node: HTMLButtonElement | null) => void;
   }
 ): ReactElement {
   return React.createElement(
@@ -150,6 +152,7 @@ function disclosureButton(
       'data-action': props.action,
       'aria-expanded': props.open,
       ...(props.ariaLabel === undefined ? {} : { 'aria-label': props.ariaLabel }),
+      ...(props.nodeRef === undefined ? {} : { ref: props.nodeRef }),
       onClick: props.onToggle,
     },
     props.label,
@@ -200,12 +203,10 @@ function NoticeStrip(props: ChildProps): ReactElement | null {
 interface MetricsProps extends ChildProps {
   readonly open: boolean;
   readonly onToggle: () => void;
-  readonly hostOpen: boolean;
-  readonly onToggleHost: () => void;
 }
 
 function MetricsStrip(props: MetricsProps): ReactElement | null {
-  const { React, state, open, onToggle, hostOpen, onToggleHost } = props;
+  const { React, state, open, onToggle } = props;
   const payload = state.payload;
   /**
    * The strip's **box** is on the page before its facts are, and it holds no facts.
@@ -251,25 +252,34 @@ function MetricsStrip(props: MetricsProps): ReactElement | null {
     );
   const rest = (label: string, value: string): ReactElement =>
     React.createElement('span', { className: 'kb-dim' }, React.createElement('b', null, label), ` ${value}`);
+  /**
+   * A search narrows the lanes to the cards it matches, while the flow metrics are computed over the
+   * whole board. `WIP 2/3` beside a one-card lane therefore reads as *that lane's* arithmetic, so the
+   * lead names the board it counts: `WIP 2/3 of 6`. The scope is added only while a search is live —
+   * an unfiltered board has nothing to disambiguate — and `total` is the board's own count, not the
+   * number of cards currently drawn. A truncated read is a different case: it has its own notice, and
+   * the metrics cover the cards that were read.
+   */
+  const searched = (state.filter.search ?? '').length > 0;
+  const wipValue = `${metrics.wip}/${wipLimit}${searched ? ` of ${payload.total}` : ''}`;
+  /**
+   * A null age is not zero days. `Oldest —d` read as a formatting glitch, so the lead prints the em
+   * dash the rest of the strip uses and nothing after it: there is no age to compare against the SLE.
+   */
+  const oldest =
+    metrics.ageing.oldestDays === null
+      ? '—'
+      : `${num(metrics.ageing.oldestDays)}d vs ${metrics.sle.days}d SLE (${sleBasis}) · ${metrics.ageing.count} past`;
   return React.createElement(
     'div',
     { className: 'kb-metrics', role: 'group', 'aria-label': 'Flow metrics' },
-    lead('WIP', `${metrics.wip}/${wipLimit}`, wipLimbs),
-    lead('Oldest', `${num(metrics.ageing.oldestDays)}d vs ${metrics.sle.days}d SLE · ${metrics.ageing.count} past`),
+    lead('WIP', wipValue, wipLimbs),
+    lead('Oldest', oldest),
     disclosureButton(React, { label: 'More metrics', open, action: 'more-metrics', onToggle }),
-    // The transport's address is developer text, so it lives beside the other slow, technical facts
-    // rather than on the header's front line. `rev` is the same kind of fact and travels with it: the
-    // error notice already names the URL, the origin and the document when any of that matters.
-    disclosureButton(React, { label: 'Host', open: hostOpen, action: 'more-host', onToggle: onToggleHost }),
-    open ? rest('Cycle', `median ${num(metrics.cycle.medianDays)}d · 85th percentile ${num(metrics.cycle.p85Days)}d · mean ${num(metrics.cycle.meanDays)}d`) : null,
-    open ? rest('Throughput', `${metrics.throughput.days7}/7d · ${metrics.throughput.days30}/30d`) : null,
-    // The three cycle readings are one fact told three ways — the disclosure exists to hold what the
-    // front cannot, so it holds all of them rather than the median alone. The full metrics, including
-    // each band's own basis, stay in `kanban_metrics`.
-    open ? rest('SLE', `${formatPercent(metrics.sle.p)}% ≤ ${metrics.sle.days}d (${sleBasis})`) : null,
-    hostOpen
-      ? React.createElement('span', { className: 'kb-dim' }, `rev ${payload.rev} · host ${state.origin.origin} · ${state.origin.source}`)
-      : null
+    // Each revealed half renders immediately after its own toggle: the disclosure is the row's
+    // content, not a block appended after every control in the strip.
+    open ? rest('Cycle', `median ${num(metrics.cycle.medianDays)}d · 85th percentile ${num(metrics.cycle.p85Days)}d`) : null,
+    open ? rest('Throughput', `${metrics.throughput.days7}/7d · ${metrics.throughput.days30}/30d`) : null
   );
 }
 
@@ -606,7 +616,7 @@ function ChecklistRows(props: ChecksProps): ReactElement {
     // `role="group"` for the same reason as the metrics strip and the lane: a name on a role-less
     // `div` is prohibited by ARIA 1.2, and these rows are exactly a named group of one gate's items.
     { className: 'kb-checks', role: 'group', 'aria-label': gate === 'dor' ? 'Definition of Ready' : 'Definition of Done' },
-    React.createElement('span', { className: 'kb-dim' }, gate === 'dor' ? 'Definition of Ready' : 'Definition of Done'),
+    React.createElement('span', { className: 'kb-label' }, gate === 'dor' ? 'Definition of Ready' : 'Definition of Done'),
     items.map((id) => {
       /**
        * `write-scope` is satisfied by recorded data as well as by a tick.
@@ -652,6 +662,47 @@ interface DrawerProps extends ChildProps {
   readonly cardNodes: CardNodes;
 }
 
+/**
+ * One run of identical history rows, with the span it covers.
+ *
+ * Six `updated → Backlog (agent)` rows in a row are a loop, not six facts: the drawer printed every
+ * event and spent more height on the history than on the checklist. A run keeps the facts — its kind,
+ * the state it moved to, the actor's kind and the time it first and last happened — and prints them
+ * once with a count and the span. Only *consecutive* rows group, so an interleaved move is never
+ * flattened into a run it was not part of.
+ */
+interface EventRun {
+  readonly kind: string;
+  readonly toState: State | null;
+  readonly actor: string;
+  readonly count: number;
+  readonly firstAt: string;
+  readonly lastAt: string;
+  readonly firstId: number;
+}
+
+function groupEvents(
+  events: readonly { readonly id: number; readonly kind: string; readonly toState: State | null; readonly actor: string; readonly at: string }[]
+): EventRun[] {
+  const runs: EventRun[] = [];
+  for (const entry of events) {
+    const previous = runs[runs.length - 1];
+    if (
+      previous !== undefined &&
+      previous.kind === entry.kind &&
+      previous.toState === entry.toState &&
+      actorKind(previous.actor) === actorKind(entry.actor)
+    ) {
+      const firstAt = Date.parse(entry.at) < Date.parse(previous.firstAt) ? entry.at : previous.firstAt;
+      const lastAt = Date.parse(entry.at) > Date.parse(previous.lastAt) ? entry.at : previous.lastAt;
+      runs[runs.length - 1] = { ...previous, count: previous.count + 1, firstAt, lastAt };
+    } else {
+      runs.push({ kind: entry.kind, toState: entry.toState, actor: entry.actor, count: 1, firstAt: entry.at, lastAt: entry.at, firstId: entry.id });
+    }
+  }
+  return runs;
+}
+
 function Drawer(props: DrawerProps): ReactElement {
   const { React, state, store, task, onAnnounce, cardNodes, moveOrStage } = props;
   const [comment, setComment] = React.useState('');
@@ -662,6 +713,7 @@ function Drawer(props: DrawerProps): ReactElement {
   const [exceptionOpen, setExceptionOpen] = React.useState(false);
   const [exceptionReason, setExceptionReason] = React.useState('');
   const [exceptionTarget, setExceptionTarget] = React.useState<State>(moveTargets(task.state)[0] ?? task.state);
+  const [historyOpen, setHistoryOpen] = React.useState(false);
   const drawerRef = React.useRef<HTMLDivElement | null>(null);
   const dropRef = React.useRef<HTMLInputElement | null>(null);
   /**
@@ -863,11 +915,11 @@ function Drawer(props: DrawerProps): ReactElement {
     React.createElement(
       'div',
       { className: 'kb-group' },
-      React.createElement('span', { className: 'kb-dim' }, 'detail'),
+      React.createElement('span', { className: 'kb-label' }, 'detail'),
       React.createElement(
         'div',
         { className: 'kb-bar' },
-        React.createElement('span', { className: 'kb-dim' }, 'priority'),
+        React.createElement('span', { className: 'kb-inline-label' }, 'priority'),
         React.createElement(
           'select',
           {
@@ -881,7 +933,7 @@ function Drawer(props: DrawerProps): ReactElement {
           },
           ...PRIORITIES.map((entry) => React.createElement('option', { key: entry, value: entry }, PRIORITY_LABEL[entry]))
         ),
-        React.createElement('span', { className: 'kb-dim' }, 'class'),
+        React.createElement('span', { className: 'kb-inline-label' }, 'class'),
         React.createElement(
           'select',
           {
@@ -902,7 +954,7 @@ function Drawer(props: DrawerProps): ReactElement {
     React.createElement(
       'div',
       { className: 'kb-group' },
-      React.createElement('span', { className: 'kb-dim' }, 'move'),
+      React.createElement('span', { className: 'kb-label' }, 'move'),
       React.createElement(
         'div',
         { className: 'kb-bar' },
@@ -929,7 +981,7 @@ function Drawer(props: DrawerProps): ReactElement {
             React.createElement(
               'div',
               { className: 'kb-bar' },
-              React.createElement('span', { className: 'kb-dim' }, 'position'),
+              React.createElement('span', { className: 'kb-inline-label' }, 'position'),
               React.createElement('input', {
                 className: 'kb-input',
                 type: 'number',
@@ -975,7 +1027,7 @@ function Drawer(props: DrawerProps): ReactElement {
               ? React.createElement(
                   'div',
                   { className: 'kb-bar' },
-                  React.createElement('span', { className: 'kb-dim' }, 'except'),
+                  React.createElement('span', { className: 'kb-inline-label' }, 'except'),
                   React.createElement(
                     'select',
                     {
@@ -1023,7 +1075,7 @@ function Drawer(props: DrawerProps): ReactElement {
             React.createElement(
               'div',
               { className: 'kb-group' },
-              React.createElement('span', { className: 'kb-dim' }, 'block'),
+              React.createElement('span', { className: 'kb-label' }, 'block'),
               React.createElement(
                 'div',
                 { className: 'kb-bar' },
@@ -1066,7 +1118,7 @@ function Drawer(props: DrawerProps): ReactElement {
                 role: 'group',
                 'aria-label': 'Dropped, needs a written reason to confirm',
               },
-              React.createElement('span', { className: 'kb-dim' }, 'drop'),
+              React.createElement('span', { className: 'kb-label' }, 'drop'),
               // Why the gesture that opened this drawer is asking rather than doing. It is rendered
               // only when a drop is staged, and the reason field points at it, so a reader who lands
               // on the field is told the rule without having to find the drawer's prose.
@@ -1115,81 +1167,122 @@ function Drawer(props: DrawerProps): ReactElement {
     ),
     React.createElement(ChecklistRows, { React, state, store, onAnnounce, task, gate: 'dor', items: state.payload?.dow.dor ?? [] }),
     React.createElement(ChecklistRows, { React, state, store, onAnnounce, task, gate: 'dod', items: state.payload?.dow.dod ?? [] }),
+    // The card's record was a naked block of dim spans with no label, so it read as a continuation of
+    // the Definition of Done rather than as the card's own filing. It is a section now, named in the
+    // one label treatment the drawer uses, and the hairline above it comes from the section rule.
     React.createElement(
       'div',
-      { className: 'kb-list' },
-      React.createElement('span', { className: 'kb-dim kb-prose' }, `outcome: ${task.outcome ?? '—'}`),
-      React.createElement('span', { className: 'kb-dim kb-prose' }, `acceptance: ${task.acceptance ?? '—'}`),
-      // One line, and only when there is something to say: the scope is card data the drawer would
-      // otherwise make the reader open a tool to see.
-      task.writeScopes.length === 0
-        ? null
-        : React.createElement('span', { className: 'kb-dim kb-prose' }, `write scope: ${task.writeScopes.join(', ')}`),
+      { className: 'kb-group' },
+      React.createElement('span', { className: 'kb-label' }, 'card'),
       React.createElement(
-        'span',
-        { className: 'kb-dim' },
-        `owner ${task.assignee ?? '—'} · project ${task.project ?? '—'} · sprint ${task.sprintId ?? '—'}`
-      ),
-      React.createElement(
-        'span',
-        { className: 'kb-dim' },
-        `rev ${task.rev} · started ${task.startedAt ?? '—'} · finished ${task.finishedAt ?? '—'}`
-      )
-    ),
-    React.createElement(
-      'div',
-      { className: 'kb-bar' },
-      React.createElement('input', {
-        className: 'kb-input',
-        type: 'text',
-        placeholder: 'comment…',
-        'aria-label': 'Comment',
-        value: comment,
-        onChange: (event: { target: { value: string } }) => setComment(event.target.value),
-      }),
-      React.createElement(
-        'button',
-        {
-          className: 'kb-btn',
-          type: 'button',
-          disabled: comment.trim().length === 0,
-          onClick: () => {
-            void store.comment(task.id, comment);
-            setComment('');
-          },
-        },
-        'Comment'
-      )
-    ),
-    comments.length === 0
-      ? null
-      : React.createElement(
-          'div',
-          { className: 'kb-list' },
-          comments.map((entry) =>
-            React.createElement('span', { className: 'kb-dim', key: String(entry.id) }, `${entry.actor}: ${entry.body}`)
-          )
+        'div',
+        { className: 'kb-list' },
+        React.createElement('span', { className: 'kb-dim kb-prose' }, `outcome: ${task.outcome ?? '—'}`),
+        React.createElement('span', { className: 'kb-dim kb-prose' }, `acceptance: ${task.acceptance ?? '—'}`),
+        // One line, and only when there is something to say: the scope is card data the drawer would
+        // otherwise make the reader open a tool to see.
+        task.writeScopes.length === 0
+          ? null
+          : React.createElement('span', { className: 'kb-dim kb-prose' }, `write scope: ${task.writeScopes.join(', ')}`),
+        React.createElement(
+          'span',
+          { className: 'kb-dim' },
+          `owner ${task.assignee ?? '—'} · project ${task.project ?? '—'} · sprint ${task.sprintId ?? '—'}`
         ),
+        React.createElement(
+          'span',
+          { className: 'kb-dim' },
+          `rev ${task.rev} · started ${task.startedAt ?? '—'} · finished ${task.finishedAt ?? '—'}`
+        )
+      )
+    ),
+    // Comment and its existing rows are one section: the human's voice stays visible, and the field
+    // and the conversation it appends to are named together.
+    React.createElement(
+      'div',
+      { className: 'kb-group' },
+      React.createElement('span', { className: 'kb-label' }, 'comment'),
+      React.createElement(
+        'div',
+        { className: 'kb-bar' },
+        React.createElement('input', {
+          className: 'kb-input',
+          type: 'text',
+          placeholder: 'comment…',
+          'aria-label': 'Comment',
+          value: comment,
+          onChange: (event: { target: { value: string } }) => setComment(event.target.value),
+        }),
+        React.createElement(
+          'button',
+          {
+            className: 'kb-btn',
+            type: 'button',
+            disabled: comment.trim().length === 0,
+            onClick: () => {
+              void store.comment(task.id, comment);
+              setComment('');
+            },
+          },
+          'Comment'
+        )
+      ),
+      comments.length === 0
+        ? null
+        : React.createElement(
+            'div',
+            { className: 'kb-list' },
+            comments.map((entry) =>
+              // The store writes `agent:session-83dd…`; a raw session id is not a word for a human.
+              // The row prints the actor's kind and keeps the token in the title, exactly as a history
+              // row does — the comment was the one place the raw id still reached the screen.
+              React.createElement(
+                'span',
+                { className: 'kb-dim', key: String(entry.id), title: entry.actor },
+                `${actorKind(entry.actor)}: ${entry.body}`
+              )
+            )
+          )
+    ),
+    // History is the one section that starts closed. It is evidence, not the conversation, and at
+    // six events it cost more drawer height than the checklist did; `history N` says how much is
+    // behind the toggle, and a run of identical rows is printed once with its count and span.
     events.length === 0
       ? null
       : React.createElement(
           'div',
-          { className: 'kb-list' },
-          React.createElement('span', { className: 'kb-dim' }, 'history'),
-          events.map((entry) =>
-            React.createElement(
-              'span',
-              {
-                className: 'kb-mono kb-dim',
-                key: String(entry.id),
-                // The store writes the actor as `kind:id` — `agent:01J…`, a raw session id, which is
-                // not a word for a human to read. The row prints the *kind* and keeps the id in the
-                // title, where a reader who wants to know which session moved the card can find it.
-                title: entry.actor,
-              },
-              `${formatStamp(entry.at)} ${entry.kind}${entry.toState === null ? '' : ` → ${STATE_LABEL[entry.toState]}`} (${actorKind(entry.actor)})`
-            )
-          )
+          { className: 'kb-group' },
+          React.createElement(
+            'div',
+            { className: 'kb-bar' },
+            disclosureButton(React, {
+              label: `history ${events.length}`,
+              open: historyOpen,
+              action: 'history',
+              onToggle: () => setHistoryOpen(!historyOpen),
+            })
+          ),
+          historyOpen
+            ? React.createElement(
+                'div',
+                { className: 'kb-list' },
+                groupEvents(events).map((run) =>
+                  React.createElement(
+                    'span',
+                    {
+                      className: 'kb-mono kb-dim',
+                      key: String(run.firstId),
+                      // The raw `kind:id` token of the run's first event, for a reader who needs to
+                      // know which session it was. The visible row prints only the kind.
+                      title: run.actor,
+                    },
+                    run.count === 1
+                      ? `${formatStamp(run.firstAt)} ${run.kind}${run.toState === null ? '' : ` → ${STATE_LABEL[run.toState]}`} (${actorKind(run.actor)})`
+                      : `${run.count} × ${run.kind}${run.toState === null ? '' : ` → ${STATE_LABEL[run.toState]}`} (${actorKind(run.actor)}) · ${formatStamp(run.firstAt)} – ${formatStamp(run.lastAt)}`
+                  )
+                )
+              )
+            : null
         )
   );
 }
@@ -1213,20 +1306,35 @@ export function BoardPage(props: BoardProps): ReactElement {
   const [drag, setDrag] = React.useState<DragState | null>(null);
   const [announcement, setAnnouncement] = React.useState('');
   const [draft, setDraft] = React.useState('');
+  /** The new-card disclosure: closed until the human asks for the one row it reveals. */
+  const [newCardOpen, setNewCardOpen] = React.useState(false);
+  const newTitleRef = React.useRef<HTMLInputElement | null>(null);
+  const newCardToggleRef = React.useRef<HTMLButtonElement | null>(null);
   /**
    * What each disclosure is showing.
    *
-   * Two small ones — the flow history and the host line — and the state lives here rather than in a
-   * `<details>` so the revealed half renders inline, in the row it belongs to.
+   * The flow history lives here rather than in a `<details>` so the revealed half renders inline, in
+   * the row it belongs to. `New card` follows the same primitive: a toggle in the toolbar and one row
+   * beneath it, never a modal and never a focus trap.
    */
   const [metricsOpen, setMetricsOpen] = React.useState(false);
-  const [hostOpen, setHostOpen] = React.useState(false);
   /** Live card nodes, so a closing drawer can return focus to the card it was opened from. */
   const cardNodes = React.useRef<Map<string, CardNode>>(new Map());
   /** The board revision this commit has drawn. Compared against the store to prove the DOM is current. */
   const renderedRev = state.payload?.rev ?? null;
 
   React.useEffect(() => store.start(), [store]);
+
+  /**
+   * Opening `New card` puts the keyboard in the field it revealed.
+   *
+   * The toggle keeps the focus when it closes, so the row is a disclosure in the page flow and not a
+   * modal: nothing is trapped, `Tab` walks out of the row like any other, and closing it returns the
+   * keyboard to the control that opened it rather than to the document.
+   */
+  React.useEffect(() => {
+    if (newCardOpen) newTitleRef.current?.focus();
+  }, [newCardOpen]);
 
   /**
    * Record what this mount has committed, for whoever is watching the page rather than the store.
@@ -1341,9 +1449,10 @@ export function BoardPage(props: BoardProps): ReactElement {
       // The count line folds what is on screen into one honest sentence. The test is `shown !== total`
       // and nothing else: the only thing that can now hide a card is the search box or a truncated
       // read, and either way a header that said "6 cards" over five drawn cards is the kind of small
-      // lie this board exists to avoid. **The revision is not here**: `rev 7` is developer vocabulary
-      // on the operator's front line, so it travels with the host line behind the `Host` disclosure in
-      // the metrics strip.
+      // lie this board exists to avoid. **The revision is not on the panel at all**: `rev 7` is
+      // developer vocabulary on the operator's front line, and the `Host` disclosure that carried it
+      // was removed whole — the error notice still names the URL, the origin and the document when
+      // any of that matters.
       //
       // Three pending/absent readings, and they are three different facts. `connecting…` is the first
       // read still in flight. A board that has **failed** is not connecting: the error notice beneath
@@ -1361,7 +1470,12 @@ export function BoardPage(props: BoardProps): ReactElement {
             : `${total} cards`
       ),
       React.createElement('span', { className: 'kb-spacer' }),
-      React.createElement('button', { className: 'kb-btn', type: 'button', onClick: () => void store.refresh(true) }, 'Refresh')
+      // One behaviour, one name. On the error screen the notice's `Retry` sits beside the explanation
+      // that says what failed, so the header's `Refresh` would be a second control for the same read
+      // and a weaker one for it: it is not beside the diagnosis and it says nothing about recovery.
+      state.payload === null && state.status === 'error'
+        ? null
+        : React.createElement('button', { className: 'kb-btn', type: 'button', onClick: () => void store.refresh(true) }, 'Refresh')
     ),
     React.createElement(
       'div',
@@ -1369,8 +1483,11 @@ export function BoardPage(props: BoardProps): ReactElement {
       React.createElement('input', {
         className: 'kb-input',
         type: 'search',
-        placeholder: 'search cards…',
-        'aria-label': 'Search cards',
+        // Dhira asked for this placeholder in these words. It introduces a second noun — the panel
+        // says "card" everywhere else — which is recorded as an open question in DESIGN.md rather
+        // than silently lived with. His instruction wins over the lens's one-noun argument.
+        placeholder: 'Search task…',
+        'aria-label': 'Search tasks',
         value: state.filter.search ?? '',
         onChange: (event: { target: { value: string } }) =>
           store.setFilter({ ...state.filter, search: event.target.value.length === 0 ? undefined : event.target.value }),
@@ -1379,44 +1496,68 @@ export function BoardPage(props: BoardProps): ReactElement {
       // do not group by that, I think it's not common, just view all"*: the `Board | Ageing | All |
       // Dropped` row and the `all states` select that followed it are both removed, and the board now
       // draws every state as a lane with `dropped` last, so nothing needs a control to make one
-      // reachable. The panel's toolbar is therefore one search box, one title field and `Add`.
+      // reachable. The panel's toolbar is a search box and `New card`; the title field and `Add` are
+      // the row that toggle reveals, and they are not on screen until it is used.
       //
       // Two notes for whoever reads this next. The select was the fresh critique's item 18 — "the
       // human lost single-state narrowing" — and removing it is a deliberate override, not an
       // oversight: narrowing to one state now belongs to the agent's `kanban_list({ state: … })` and
       // `bin/kanban.mjs --state`, which still take it. And the ageing information survives the loss of
       // the `Ageing` view without a control of its own: the metrics strip's lead already reads
-      // `Oldest 1.5d vs 3d SLE · 0 past`, which is what that view was for. The board's saved views are
-      // untouched at the data level (`board.db`, the `views` payload field, the store and the host
-      // API), so nothing here changes what an agent or the CLI can ask for.
+      // `Oldest 1.5d vs 3d SLE (from default) · 0 past`, which is what that view was for. The board's
+      // saved views are untouched at the data level (`board.db`, the `views` payload field, the store
+      // and the host API), so nothing here changes what an agent or the CLI can ask for.
       React.createElement('span', { className: 'kb-spacer' }),
-      React.createElement('input', {
-        className: 'kb-input',
-        type: 'text',
-        placeholder: 'new card…',
-        'aria-label': 'New card title',
-        value: draft,
-        onChange: (event: { target: { value: string } }) => setDraft(event.target.value),
-      }),
-      // Creation takes a title and nothing else. The two fields it used to carry (priority, class)
-      // are the store's defaults here — `p2-normal` / `standard`, applied by `kanban_create` — and
-      // the drawer sets both one step later, so the first row of the panel stops being four controls.
-      React.createElement(
-        'button',
-        {
-          className: 'kb-btn',
-          type: 'button',
-          'data-action': 'create',
-          disabled: draft.trim().length === 0,
-          onClick: () => {
-            const title = draft;
-            setDraft('');
-            void store.create(title);
-          },
+      disclosureButton(React, {
+        label: 'New card',
+        open: newCardOpen,
+        action: 'new-card',
+        onToggle: () => setNewCardOpen(!newCardOpen),
+        nodeRef: (node) => {
+          newCardToggleRef.current = node;
         },
-        'Add'
-      )
+      })
     ),
+    // Creation is a disclosure, not a dialog: one row beneath the toolbar, only while it is used,
+    // with no overlay, no focus trap and no new dependency. The field takes the row's width and
+    // `Add` sits at its content edge, so the row is a form rather than a small control in a large
+    // empty bar. The two fields creation used to carry (priority, class) are the store's defaults —
+    // `p2-normal` / `standard` — and the drawer sets both one step later.
+    newCardOpen
+      ? React.createElement(
+          'div',
+          { className: 'kb-bar kb-new-card' },
+          React.createElement('input', {
+            className: 'kb-input',
+            type: 'text',
+            placeholder: 'new card…',
+            'aria-label': 'New card title',
+            'data-field': 'new-title',
+            ref: newTitleRef,
+            value: draft,
+            onChange: (event: { target: { value: string } }) => setDraft(event.target.value),
+          }),
+          React.createElement(
+            'button',
+            {
+              className: 'kb-btn',
+              type: 'button',
+              'data-action': 'create',
+              disabled: draft.trim().length === 0,
+              onClick: () => {
+                const title = draft;
+                setDraft('');
+                setNewCardOpen(false);
+                // The row the button lived in is gone the moment it succeeds, so the keyboard goes
+                // back to the control that opened it instead of falling to the document body.
+                newCardToggleRef.current?.focus();
+                void store.create(title);
+              },
+            },
+            'Add'
+          )
+        )
+      : null,
     React.createElement(NoticeStrip, child),
     // A partly-read board says so on screen, for the same reason the generated file does: the
     // metrics are computed from the cards that were read.
@@ -1431,9 +1572,11 @@ export function BoardPage(props: BoardProps): ReactElement {
       ...child,
       open: metricsOpen,
       onToggle: () => setMetricsOpen(!metricsOpen),
-      hostOpen,
-      onToggleHost: () => setHostOpen(!hostOpen),
     }),
+    // The sprint is board-level metadata, not drawer metadata: it used to sit wedged between the
+    // board and the drawer, where the last thing above it was the lane row and the first thing below
+    // it was a card's own surface. It now sits above the lanes, with the other board-level facts.
+    React.createElement(SprintBar, child),
     // The announcer, present on every pass whether or not it has anything to say: a live region that
     // is inserted with its first message is a live region several screen readers never announce. It
     // is visually hidden — `.kb-vh`, the sheet's one utility class — so the strip paints nothing and
@@ -1473,7 +1616,6 @@ export function BoardPage(props: BoardProps): ReactElement {
           },
           columns.map((column) => React.createElement(Lane, { key: column.state, ...child, column, drag, setDrag, loading }))
         ),
-    React.createElement(SprintBar, child),
     // Keyed by card, so opening a different card hands focus to the new drawer rather than reusing
     // the old one's focus-return target.
     task === undefined ? null : React.createElement(Drawer, { ...child, task, key: task.id })
