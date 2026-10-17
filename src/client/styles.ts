@@ -188,10 +188,11 @@ export const STYLES = `
    The lane header is the panel's whole state vocabulary -- its state name and count take the tone --
    the drawer's state chip repeats it where the card's state is the subject, and the card's exception
    chips (blocked, P0, expedite) take attention because they are exceptions, not descriptions.
-   Attention is the app's refusal red; quiet is the secondary label; active is a blue that clears AA
-   as text in each theme. The light blue is the app's own deep 'primary bluish' label; the dark one is
-   its business blue, because the light token resolves to near-white in dark and would read as body
-   text. No tone is the only carrier of anything: the name, the count and the chip's word are there.
+   Active is the work in hand and the queue's next move (in-progress, review); attention is the
+   app's refusal red for the four things that need the human; quiet is the secondary label. The light
+   blue is the app's own deep 'primary bluish' label; the dark one is its business blue, because the
+   light token resolves to near-white in dark and would read as body text. No tone is the only
+   carrier of anything: the name, the count and the chip's word are there.
    **Done is quiet on purpose** -- finished work is not a warning and must not pull the eye. */
 .kb-lane-head.kb-tone-attention > .kb-lane-name,
 .kb-lane-head.kb-tone-attention > .kb-lane-count,
@@ -221,10 +222,11 @@ body[data-ds-dark-theme] .kb-chip.kb-tone-active { color: var(--dsw-alias-state-
 /* A dropped card is not an expedite one: nothing is wrong and nothing is waiting. It keeps its shape
    and its hairline and takes the dim tier, because the only thing it says is "out of play". */
 .kb-card-dropped { color: var(--dsw-alias-label-secondary, var(--kb-label-secondary)); }
-/* The expedite/blocked signal is a 1px state-coloured border, never a thick side stripe: the
-   state itself is already named in the card's own content (class chip, blocked chip, priority). */
+/* The expedite signal is a 1px red border, never a thick side stripe: the state itself is already
+   named in the card's own content (class chip, priority). A blocked card has no state edge at all:
+   its blocked chip carries the word and the attention tone, and the old amber edge measured 2.15:1
+   on white, below the 3:1 graphical floor -- a weaker second signal for the same fact. */
 .kb-card-expedite { border-color: var(--dsw-alias-state-error-primary, #d64545); }
-.kb-card-blocked { border-color: var(--dsw-alias-state-warn-primary, #d68945); }
 /* Four items in a 236px lane: this row must never wrap, and no item may break mid-token -- a split
    "T-005" is exactly what a too-narrow row looks like. The words that used to sit here moved to the
    chip row below, where they wrap without breaking anything. */

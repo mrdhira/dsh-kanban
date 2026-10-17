@@ -1475,7 +1475,9 @@ test('no craft-floor side stripe survives in the stylesheet', () => {
   assert.deepEqual(oneSidedBorderWidths(styles), [], 'no thick one-sided border');
   assert.match(styles, /\.kb-notice-refusal \{ border-color: var\(--dsw-alias-state-error-primary/);
   assert.match(styles, /\.kb-card-expedite \{ border-color: var\(--dsw-alias-state-error-primary/);
-  assert.match(styles, /\.kb-card-blocked \{ border-color: var\(--dsw-alias-state-warn-primary/);
+  // The blocked card's amber edge is gone: its chip carries the word and the tone, and that edge
+  // measured 2.15:1 on white, below even the 3:1 graphical floor.
+  assert.equal(styles.includes('kb-card-blocked'), false, 'the blocked card has no state edge');
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/, 'the motion added is switchable off');
 });
 
@@ -2071,7 +2073,7 @@ test('tone: every lane state maps to exactly one of the three tones, on its own 
     backlog: 'quiet',
     ready: 'quiet',
     'in-progress': 'active',
-    review: 'attention',
+    review: 'active',
     done: 'quiet',
     dropped: 'quiet',
   };
@@ -2085,6 +2087,14 @@ test('tone: every lane state maps to exactly one of the three tones, on its own 
     assert.equal(name, STATE_LABEL[state as keyof typeof STATE_LABEL], `${state} keeps its state word`);
     assert.match(view.find(`[data-lane="${state}"] .kb-lane-count`)?.textContent ?? '', /^\d+(\/\d+)?$/);
   }
+  // Review is the queue's next move, not an alarm: the lane and the drawer's state chip both take
+  // the active tone, and neither is attention. Red is reserved for the four things that need a human.
+  await view.click('[data-card="T-103"]');
+  await flush();
+  const reviewChip = view.find('[data-drawer="T-103"] .kb-drawer-head .kb-chip');
+  assert.equal(reviewChip?.textContent, 'Review', 'the drawer chip still names the state');
+  assert.equal(reviewChip?.className.includes('kb-tone-active'), true, 'review takes active in the drawer too');
+  assert.equal(reviewChip?.className.includes('kb-tone-attention'), false, 'review is no longer attention');
   view.unmount();
 });
 
@@ -2398,7 +2408,16 @@ test('D6: a blocked card says so, and Unblock is on the notice that names the bl
     task.id === 'T-002' ? { ...task, blockedReason: 'waiting on the host route' } : task
   );
   const view = await mountBoard(loadBundle(), { ...payload, tasks });
-  assert.match(view.find('[data-card="T-002"]')?.textContent ?? '', /blocked/);
+  const blockedCard = view.find('[data-card="T-002"]');
+  assert.match(blockedCard?.textContent ?? '', /blocked/);
+  // The chip is the signal. The old amber 1px edge signalled the same fact in a second colour that
+  // measures 2.15:1 on white, so it is gone from both the card's classes and the stylesheet.
+  assert.equal(blockedCard?.className.includes('kb-card-blocked'), false, 'a blocked card has no amber edge');
+  assert.equal(
+    readFileSync(new URL('../src/client/styles.ts', import.meta.url), 'utf8').includes('kb-card-blocked'),
+    false,
+    'and its edge rule is gone from the sheet'
+  );
 
   await view.click('[data-card="T-002"]');
   await flush();

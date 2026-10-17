@@ -189,17 +189,18 @@ export function ageDays(task: Task, nowIso: string): number | null {
 export type StateTone = 'active' | 'attention' | 'quiet';
 
 /**
- * The tone for a state: `in-progress` is the work in hand, `review` is the exception that waits on
- * a human, and everything else is quiet. A lane that has passed its limit is an exception first:
- * its tone is attention whatever state it holds, while its name still says which state it is.
+ * The tone for a state: `in-progress` and `review` are the work the queue is doing, so both take
+ * active; everything else is quiet. Review is the queue's next move, not a problem -- red is kept
+ * for the four things that genuinely need the human: a blocked card, an over-limit lane, `P0` and
+ * `expedite`. A lane that has passed its limit is an exception first: its tone is attention
+ * whatever state it holds, while its name still says which state it is.
  *
  * `done` is deliberately quiet, not the success green. Finished work is not a warning and must not
  * pull the eye; the drawn tick on the card is the separate, redundant mark that it is finished.
  */
 export function stateTone(state: State, over = false): StateTone {
   if (over) return 'attention';
-  if (state === 'in-progress') return 'active';
-  if (state === 'review') return 'attention';
+  if (state === 'in-progress' || state === 'review') return 'active';
   return 'quiet';
 }
 

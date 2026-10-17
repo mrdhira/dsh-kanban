@@ -353,7 +353,9 @@ function CardView(props: CardProps): ReactElement {
   const band = ageBand(days, state.payload?.dow.sle.days ?? 3);
   const classes = ['kb-card'];
   if (task.classOfService === 'expedite') classes.push('kb-card-expedite');
-  if (task.blockedReason !== null) classes.push('kb-card-blocked');
+  // A blocked card takes no state edge. Its `blocked` chip carries both the word and the attention
+  // tone, so an amber edge would be a second, weaker signal for the same fact at 2.15:1 on white --
+  // below the 3:1 graphical floor. The expedite hairline stays: it is the card's only other signal.
   // A dropped card says so by its whole card: dim, and beside the drawn tick, the one state that is
   // neither a warning nor a verdict. When the view row was removed it became simply the last lane on
   // the board, so a dropped card is on screen without anyone asking for it.
