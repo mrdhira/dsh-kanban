@@ -184,6 +184,31 @@ export const STYLES = `
 .kb-lane-head { display: flex; align-items: center; gap: 7px; line-height: 1.4; }
 .kb-lane-name { font-weight: 600; }
 .kb-lane-count { color: var(--dsw-alias-label-secondary, var(--kb-label-secondary)); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+/* The state tones: three and no more, and every one lands on text that already names the thing.
+   The lane header is the panel's whole state vocabulary -- its state name and count take the tone --
+   the drawer's state chip repeats it where the card's state is the subject, and the card's exception
+   chips (blocked, P0, expedite) take attention because they are exceptions, not descriptions.
+   Attention is the app's refusal red; quiet is the secondary label; active is a blue that clears AA
+   as text in each theme. The light blue is the app's own deep 'primary bluish' label; the dark one is
+   its business blue, because the light token resolves to near-white in dark and would read as body
+   text. No tone is the only carrier of anything: the name, the count and the chip's word are there.
+   **Done is quiet on purpose** -- finished work is not a warning and must not pull the eye. */
+.kb-lane-head.kb-tone-attention > .kb-lane-name,
+.kb-lane-head.kb-tone-attention > .kb-lane-count,
+.kb-chip.kb-tone-attention { color: var(--dsw-alias-state-error-primary, #d64545); }
+/* The attention count also takes the weight the over-limit count already had, so the lane reads as
+   one signal twice-told rather than a red number beside an ordinary one. */
+.kb-lane-head.kb-tone-attention > .kb-lane-count,
+.kb-chip.kb-tone-attention { font-weight: 600; }
+.kb-lane-head.kb-tone-quiet > .kb-lane-name,
+.kb-lane-head.kb-tone-quiet > .kb-lane-count,
+.kb-chip.kb-tone-quiet { color: var(--dsw-alias-label-secondary, var(--kb-label-secondary)); }
+.kb-lane-head.kb-tone-active > .kb-lane-name,
+.kb-lane-head.kb-tone-active > .kb-lane-count,
+.kb-chip.kb-tone-active { color: var(--dsw-alias-label-primary-bluish, #0e3074); }
+body[data-ds-dark-theme] .kb-lane-head.kb-tone-active > .kb-lane-name,
+body[data-ds-dark-theme] .kb-lane-head.kb-tone-active > .kb-lane-count,
+body[data-ds-dark-theme] .kb-chip.kb-tone-active { color: var(--dsw-alias-state-business-primary, #7aaaff); }
 /* Over-limit is one signal told twice: the count goes red (and heavier, so it survives a greyscale
    read) and the chip beside it says "over limit" in words. Neither half is colour alone, and the two
    now read as one warning rather than a coloured number beside an ordinary chip. */

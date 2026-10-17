@@ -177,6 +177,32 @@ export function ageDays(task: Task, nowIso: string): number | null {
   return Math.round(days * 10) / 10;
 }
 
+/**
+ * The three tones the panel is allowed to spend colour on.
+ *
+ * Colour is not a description of a state at rest. It is spent on **exceptions** and on the state
+ * the reader is looking at. There are exactly three tones, all resolved from the app's own
+ * `--dsw-*` tokens, and each one lands on text that already names the thing it colours: the lane
+ * header's state name and count, the drawer's state chip, and the two card exceptions. A tone can
+ * therefore never be the carrier of meaning, only a redundant reinforcement of a word.
+ */
+export type StateTone = 'active' | 'attention' | 'quiet';
+
+/**
+ * The tone for a state: `in-progress` is the work in hand, `review` is the exception that waits on
+ * a human, and everything else is quiet. A lane that has passed its limit is an exception first:
+ * its tone is attention whatever state it holds, while its name still says which state it is.
+ *
+ * `done` is deliberately quiet, not the success green. Finished work is not a warning and must not
+ * pull the eye; the drawn tick on the card is the separate, redundant mark that it is finished.
+ */
+export function stateTone(state: State, over = false): StateTone {
+  if (over) return 'attention';
+  if (state === 'in-progress') return 'active';
+  if (state === 'review') return 'attention';
+  return 'quiet';
+}
+
 export type AgeBand = 'fresh' | 'ageing' | 'stale';
 
 /** How a card's age reads against the Service Level Expectation. */

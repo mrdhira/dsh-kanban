@@ -32,7 +32,7 @@ import {
 import { resolveOrigin } from '../lib/v1/client/api.js';
 import { createBoardStore } from '../lib/v1/client/store.js';
 import { EMPTY_FILTER, checkMoveLocally, columnsOf } from '../lib/v1/client/model.js';
-import { PRIORITIES } from '../lib/v1/store/index.js';
+import { PRIORITIES, STATE_LABEL } from '../lib/v1/store/index.js';
 
 const FULL_DOR = Object.fromEntries(
   ['outcome', 'acceptance', 'write-scope', 'estimate'].map((id) => [id, { at: '2026-10-01T00:00:00.000Z', by: 'human:dhira' }])
@@ -1297,6 +1297,7 @@ test('P4.11: every kb- class the panel emits is authored in the sheet, and the f
     'kb-pri-': PRIORITIES.map((priority) => `kb-pri-${priority.slice(0, 2)}`),
     'kb-age-': ['fresh', 'ageing', 'stale'].map((band) => `kb-age-${band}`),
     'kb-notice-': ['refusal', 'info', 'error'].map((kind) => `kb-notice-${kind}`),
+    'kb-tone-': ['kb-tone-active', 'kb-tone-attention', 'kb-tone-quiet'],
   };
   // The walk this test's name always claimed but never did: every `kb-` token the components file
   // names is one it emits, because the class lists are its own string literals and template prefixes.
@@ -1533,11 +1534,13 @@ test('every CSS variable the panel uses is a theme token the app actually provid
     '--dsw-alias-border-l2',
     '--dsw-alias-brand-primary',
     '--dsw-alias-label-primary',
+    '--dsw-alias-label-primary-bluish',
     '--dsw-alias-label-secondary',
     '--dsw-alias-label-tertiary',
     '--dsw-alias-scrollbar-bg-l1',
     '--dsw-alias-scrollbar-bg-l2',
     '--dsw-alias-scrollbar-hover-l1',
+    '--dsw-alias-state-business-primary',
     '--dsw-alias-state-error-primary',
     '--dsw-alias-state-idle-primary',
     '--dsw-alias-state-success-primary',
@@ -1860,8 +1863,10 @@ const RESOLVED: Readonly<Record<'light' | 'dark', Readonly<Record<string, string
     'bg-base': '#ffffff',
     'bg-layer-1': '#ffffff',
     'label-primary': '#0f1115',
+    'label-primary-bluish': '#0e3074',
     'label-secondary': '#61666b',
     'label-tertiary': '#81858c',
+    'state-business-primary': '#4176e6',
     'state-success-primary': '#22c55e',
     'state-error-primary': '#ec1313',
     'scrollbar-bg-l1': '#e5e5e5',
@@ -1871,8 +1876,10 @@ const RESOLVED: Readonly<Record<'light' | 'dark', Readonly<Record<string, string
     'bg-base': '#151517',
     'bg-layer-1': '#232324',
     'label-primary': '#f9fafb',
+    'label-primary-bluish': '#f9fafb',
     'label-secondary': '#cfd3d6',
     'label-tertiary': '#adb2b8',
+    'state-business-primary': '#7aaaff',
     'state-success-primary': '#22c55e',
     'state-error-primary': '#f25a5a',
     'scrollbar-bg-l1': '#3c3c3d',
@@ -2029,6 +2036,219 @@ test('V5: the scrollbar’s two halves resolve to different things, and the trac
   const lightGap = contrast('light', 'scrollbar-bg-l1', 'scrollbar-bg-l2');
   assert.equal(Number(lightGap.toFixed(2)), 1, 'in light the two tokens are the same value — hence the transparent track');
   assert.ok(contrast('light', 'scrollbar-bg-l1', 'bg-layer-1') > 1, 'and the thumb is at least off the surface it sits on');
+});
+
+// ------------------------------------------------------------------ the state tones
+
+/**
+ * One card in every state, so the tone mapping can be read off the lanes rather than from a table
+ * that only restates the function. The card's own words are asserted beside the class: a tone that
+ * arrived without the name it reinforces would be colour-only, which the design forbids.
+ */
+function toneBoard(): Record<string, unknown> {
+  const payload = boardPayload();
+  const base = (payload.tasks as Record<string, unknown>[])[0] as Record<string, unknown>;
+  const states = ['backlog', 'ready', 'in-progress', 'review', 'done', 'dropped'] as const;
+  return {
+    ...payload,
+    tasks: states.map((state, index) => ({
+      ...base,
+      id: `T-10${String(index)}`,
+      title: `card ${state}`,
+      state,
+      position: 0,
+      startedAt: state === 'backlog' || state === 'ready' || state === 'dropped' ? null : '2026-10-14T00:00:00.000Z',
+      finishedAt: state === 'done' ? '2026-10-15T00:00:00.000Z' : null,
+      droppedReason: state === 'dropped' ? 'superseded' : null,
+    })),
+    total: states.length,
+  };
+}
+
+test('tone: every lane state maps to exactly one of the three tones, on its own name and count', async () => {
+  const view = await mountBoard(loadBundle(), toneBoard());
+  const expected: Readonly<Record<string, string>> = {
+    backlog: 'quiet',
+    ready: 'quiet',
+    'in-progress': 'active',
+    review: 'attention',
+    done: 'quiet',
+    dropped: 'quiet',
+  };
+  for (const [state, tone] of Object.entries(expected)) {
+    const head = view.find(`[data-lane="${state}"] .kb-lane-head`);
+    assert.ok(head !== null, `${state} has a lane header`);
+    const tones = ['active', 'attention', 'quiet'].filter((entry) => head.className.includes(`kb-tone-${entry}`));
+    assert.deepEqual(tones, [tone], `${state} takes ${tone} and nothing else`);
+    // The tone lands on text that already names the state and counts the cards.
+    const name = view.find(`[data-lane="${state}"] .kb-lane-name`)?.textContent;
+    assert.equal(name, STATE_LABEL[state as keyof typeof STATE_LABEL], `${state} keeps its state word`);
+    assert.match(view.find(`[data-lane="${state}"] .kb-lane-count`)?.textContent ?? '', /^\d+(\/\d+)?$/);
+  }
+  view.unmount();
+});
+
+test('tone: over-limit takes attention even on an active lane, and the words say why', async () => {
+  // The map names over-limit as an exception, so it outranks the state's own tone. The lane still
+  // names itself, still prints `3/2`, and still carries the `over limit` chip: the colour is the
+  // third telling, never the only one.
+  const payload = boardPayload();
+  const base = (payload.tasks as Record<string, unknown>[])[0] as Record<string, unknown>;
+  const tasks = [0, 1, 2].map((index) => ({
+    ...base,
+    id: `T-30${String(index)}`,
+    title: `card ${String(index)}`,
+    state: 'in-progress',
+    position: index,
+    startedAt: '2026-10-14T00:00:00.000Z',
+  }));
+  const view = await mountBoard(loadBundle(), { ...payload, tasks, total: 3 });
+
+  const head = view.find('[data-lane="in-progress"] .kb-lane-head');
+  assert.ok(head !== null);
+  assert.equal(head.className.includes('kb-tone-attention'), true, 'the exception outranks the active tone');
+  assert.equal(head.className.includes('kb-tone-active'), false);
+  assert.equal(view.find('[data-lane="in-progress"] .kb-lane-name')?.textContent, 'In Progress', 'still names the state');
+  assert.equal(view.find('[data-lane="in-progress"] .kb-lane-count')?.textContent, '3/2', 'still counts');
+  assert.equal(view.find('[data-lane="in-progress"] .kb-chip-warn')?.textContent, 'over limit', 'and says why');
+  view.unmount();
+});
+
+test('tone: done is quiet, never the success green or attention', async () => {
+  // Finished work must not pull the eye. The lane and the drawer chip are both quiet; the success
+  // hue stays on the drawn completion frame, where it is a mark, not a state tone.
+  const view = await mountBoard(loadBundle());
+  const head = view.find('[data-lane="done"] .kb-lane-head');
+  assert.ok(head !== null);
+  assert.equal(head.className.includes('kb-tone-quiet'), true, 'the done lane is quiet');
+  assert.equal(head.className.includes('kb-tone-attention'), false);
+  assert.equal(head.className.includes('kb-tone-active'), false);
+  assert.equal(head.className.includes('state-success'), false, 'done is not green');
+
+  await view.click('[data-card="T-005"]');
+  await flush();
+  const chip = view.find('[data-drawer="T-005"] .kb-drawer-head .kb-chip');
+  assert.equal(chip?.textContent, 'Done', 'the chip still says Done');
+  assert.equal(chip?.className.includes('kb-tone-quiet'), true, 'and takes the quiet tone');
+  assert.equal(chip?.className.includes('kb-tone-attention'), false);
+  assert.equal(chip?.className.includes('kb-tone-active'), false);
+  assert.ok(view.find('[data-card="T-005"] .kb-mark') !== null, 'the drawn mark is still the separate success signal');
+  view.unmount();
+});
+
+test('tone: the exception chips take attention and keep the words that carry them', async () => {
+  const base = fixture();
+  const tasks = (base.tasks as Record<string, unknown>[]).map((task) =>
+    task.id === 'T-004'
+      ? { ...task, blockedReason: 'waiting on review', classOfService: 'expedite', priority: 'p0-critical' }
+      : task
+  );
+  const view = await mountBoard(loadBundle(), { ...base, tasks });
+
+  const card = view.find('[data-card="T-004"]');
+  const chips = [...((card?.querySelectorAll('.kb-chip') ?? []) as unknown as Element[])];
+  const classNameOf = (text: string): string => {
+    const chip = chips.find((entry) => entry.textContent === text);
+    assert.ok(chip !== undefined, `the ${text} chip is on the card`);
+    return chip.className;
+  };
+  // The words were already there and stay exactly as they were; the tone is added to them.
+  for (const word of ['blocked', 'critical', 'Expedite']) {
+    assert.equal(classNameOf(word).includes('kb-tone-attention'), true, `${word} takes attention`);
+  }
+  assert.equal(classNameOf('blocked').includes('kb-chip'), true, 'and is still a chip');
+  view.unmount();
+});
+
+test('tone: P1-P4, standard and an unticked checklist row stay neutral', async () => {
+  const payload = boardPayload();
+  const priorities = ['p1-high', 'p2-normal', 'p3-low', 'p4-someday'] as const;
+  const graded = (payload.tasks as Record<string, unknown>[])
+    .filter((task) => task.id !== 'T-005')
+    .map((task, index) => ({
+      ...task,
+      state: 'backlog',
+      priority: priorities[index] ?? 'p4-someday',
+      classOfService: 'standard',
+      blockedReason: null,
+      startedAt: null,
+    }));
+  // The one P0 card is the exception this test borders: it must be toned while P1-P4 stay neutral.
+  // Asserting it here means the case fails on the pre-fix code, where nothing carried a tone at all.
+  const tasks = [...graded, { ...(graded[0] as Record<string, unknown>), id: 'T-200', priority: 'p0-critical' }];
+  // T-002 gets no definitions, so its drawer holds unticked checklist rows.
+  const view = await mountBoard(loadBundle(), { ...payload, tasks, total: tasks.length });
+
+  assert.equal(view.find('[data-card="T-200"] .kb-chip')?.textContent, 'critical');
+  assert.equal(
+    view.find('[data-card="T-200"] .kb-chip')?.className.includes('kb-tone-attention'),
+    true,
+    'P0 is the one priority that takes the attention tone'
+  );
+  // P1-P4 as codes, and P1's word chip, are all neutral: the tone is for P0 alone.
+  assert.equal(view.find('[data-card="T-001"] .kb-chip')?.textContent, 'high');
+  assert.equal(view.find('[data-card="T-001"] .kb-chip')?.className.includes('kb-tone-'), false);
+  for (const code of view.findAll('.kb-pri')) {
+    assert.equal(code.className.includes('kb-tone-'), false, 'a priority code never takes a tone');
+  }
+
+  await view.click('[data-card="T-002"]');
+  await flush();
+  const classChip = [...view.findAll('[data-drawer="T-002"] .kb-drawer-head .kb-chip')].find(
+    (chip) => chip.textContent === 'Standard'
+  );
+  assert.ok(classChip !== undefined, 'the class chip is in the drawer');
+  assert.equal(classChip.className.includes('kb-tone-'), false, 'standard stays neutral');
+
+  const unticked = view.findAll('[data-drawer="T-002"] .kb-check-missing');
+  assert.ok(unticked.length > 0, 'there are unticked rows to check');
+  for (const row of unticked) {
+    assert.equal(row.className.includes('kb-tone-'), false, 'an unticked checklist row stays neutral');
+  }
+  view.unmount();
+});
+
+test('tone: the three tones clear AA as text on every surface they land on', () => {
+  // Measured, not assumed. The active tone is one role but two tokens: the light theme takes the
+  // app's deep primary-bluish label, and the dark theme takes its business blue, because the light
+  // token resolves to near-white in dark and would read as body text. The light business blue is
+  // kept out of text use on purpose: it measures 4.25:1, which is the reason active is scoped.
+  const styles = readFileSync(new URL('../src/client/styles.ts', import.meta.url), 'utf8');
+  // The ratios below are about the colours the sheet actually assigns, so pin the assignment first.
+  // On the pre-fix code there is no tone rule at all and this case fails before measuring anything.
+  for (const [selector, token] of [
+    ['kb-tone-attention', 'state-error-primary'],
+    ['kb-tone-quiet', 'label-secondary'],
+    ['kb-tone-active', 'label-primary-bluish'],
+  ] as const) {
+    assert.match(
+      styles,
+      new RegExp(`\\.${selector}[^{}]*\\{[^}]*var\\(--dsw-alias-${token}`),
+      `${selector} is wired to ${token}`
+    );
+  }
+  assert.match(
+    styles,
+    /body\[data-ds-dark-theme\][^{}]*kb-tone-active[^{}]*\{[^}]*var\(--dsw-alias-state-business-primary/,
+    'and the dark active tone takes the business blue'
+  );
+  assert.equal(/\.kb-tone-attention[^{}]*\{[^}]*state-warn/.test(styles), false, 'attention is never amber');
+  for (const theme of ['light', 'dark'] as const) {
+    const active = theme === 'light' ? 'label-primary-bluish' : 'state-business-primary';
+    for (const surface of ['bg-layer-1', 'bg-base'] as const) {
+      const activeRatio = contrast(theme, active, surface);
+      assert.ok(activeRatio >= 4.5, `active ${theme} on ${surface} is ${activeRatio.toFixed(2)}:1`);
+      const quietRatio = contrast(theme, 'label-secondary', surface);
+      assert.ok(quietRatio >= 4.5, `quiet ${theme} on ${surface} is ${quietRatio.toFixed(2)}:1`);
+      // The app's light red is 4.4976:1 exactly; DESIGN.md rounds it to 4.50 and the suite's own
+      // floor for this token is 4.49 (V3 records the same value). It is the token the brief names
+      // for attention, so it is the one accepted here.
+      const attentionRatio = contrast(theme, 'state-error-primary', surface);
+      assert.ok(attentionRatio >= 4.49, `attention ${theme} on ${surface} is ${attentionRatio.toFixed(2)}:1`);
+    }
+  }
+  assert.ok(contrast('light', 'state-business-primary', 'bg-base') < 4.5, 'the light business blue is a fill, not text');
+  assert.ok(contrast('dark', 'state-business-primary', 'bg-base') >= 4.5, 'and the same role is the dark active text');
 });
 
 test('V6: a dragover measures each card once per drag, not once per event', async () => {

@@ -21,7 +21,7 @@
 import type { ReactElement } from 'react';
 import type { BoardStore, BoardState } from './store.js';
 import { selectedTask } from './store.js';
-import { BOARD_STATES, actorKind, ageBand, ageDays, classLabel, columnsOf, formatAge, formatStamp, moveTargets, priorityCode, priorityWord, type Column } from './model.js';
+import { BOARD_STATES, actorKind, ageBand, ageDays, classLabel, columnsOf, formatAge, formatStamp, moveTargets, priorityCode, priorityWord, stateTone, type Column } from './model.js';
 import { beginDrag, dragOver, dropTarget, indexFromPointer, isDropAllowed, keyboardTarget, stagesInsteadOfMoving, type DragState } from './dnd.js';
 import { API_PREFIX } from './api.js';
 import { STYLES, STYLE_ID } from './styles.js';
@@ -377,11 +377,24 @@ function CardView(props: CardProps): ReactElement {
    * hairline — and a state that is only a colour is not a state a reader can be relied on to see.
    */
   const chips: ReactElement[] = [];
-  if (task.blockedReason !== null) chips.push(React.createElement('span', { className: 'kb-chip', key: 'blocked' }, 'blocked'));
-  if (priorityLabel !== null) chips.push(React.createElement('span', { className: 'kb-chip', key: 'priority' }, priorityLabel));
+  // Only the exceptions take the attention tone, and each keeps the word that carries it: a reader
+  // who cannot see red is told `blocked`, the priority word, and `Expedite`. P1-P4, class of service
+  // and every resting chip stay neutral, and so does the age band: it is already a measurement.
+  if (task.blockedReason !== null) {
+    chips.push(React.createElement('span', { className: 'kb-chip kb-tone-attention', key: 'blocked' }, 'blocked'));
+  }
+  if (priorityLabel !== null) {
+    chips.push(
+      React.createElement(
+        'span',
+        { className: `kb-chip${task.priority === 'p0-critical' ? ' kb-tone-attention' : ''}`, key: 'priority' },
+        priorityLabel
+      )
+    );
+  }
   if (ageLabel !== null) chips.push(React.createElement('span', { className: 'kb-chip', key: 'age' }, ageLabel));
   if (task.classOfService === 'expedite') {
-    chips.push(React.createElement('span', { className: 'kb-chip', key: 'class' }, classLabel(task)));
+    chips.push(React.createElement('span', { className: 'kb-chip kb-tone-attention', key: 'class' }, classLabel(task)));
   }
 
   const onKeyDown = (event: { key: string; altKey: boolean; preventDefault: () => void }): void => {
@@ -529,6 +542,11 @@ function Lane(props: LaneProps): ReactElement {
     (column.limit === undefined ? '' : `, limit ${column.limit}`) +
     (column.over ? ', over the limit' : '');
 
+  // The lane header is the panel's whole state vocabulary: one tone on one element, on text that
+  // already names the state and counts the cards. Over-limit is an exception first, so it takes the
+  // attention tone whatever the lane's state is; the name still says which lane it is.
+  const tone = stateTone(column.state, column.over);
+
   return React.createElement(
     'div',
     {
@@ -560,7 +578,7 @@ function Lane(props: LaneProps): ReactElement {
     },
     React.createElement(
       'div',
-      { className: 'kb-lane-head' },
+      { className: `kb-lane-head kb-tone-${tone}` },
       React.createElement('span', { className: 'kb-lane-name' }, column.label),
       React.createElement(
         'span',
@@ -882,7 +900,9 @@ function Drawer(props: DrawerProps): ReactElement {
       React.createElement('span', { className: 'kb-lane-name' }, task.title),
       React.createElement('span', { className: 'kb-spacer' }),
       // One spelling for one entity: the store's `in-progress` is not a human's "In Progress".
-      React.createElement('span', { className: 'kb-chip' }, STATE_LABEL[task.state]),
+      // The state is the subject here, so this is the one chip that takes the state's tone; the
+      // priority, class and age chips beside it stay neutral facts.
+      React.createElement('span', { className: `kb-chip kb-tone-${stateTone(task.state)}` }, STATE_LABEL[task.state]),
       React.createElement('span', { className: 'kb-chip' }, PRIORITY_LABEL[task.priority]),
       React.createElement('span', { className: 'kb-chip' }, classLabel(task)),
       React.createElement('span', { className: 'kb-chip' }, `age ${formatAge(days)}`),
