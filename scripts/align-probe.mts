@@ -116,7 +116,7 @@ const ASAR_PATH = '/Applications/DeepSeek Harness.app/Contents/Resources/app.asa
 const THEME_MODULE = '/dsh/node_modules/@deepseek-ai/dsh-client-ui-theme/lib/client.js';
 const DESIGN_PLATFORM_MARKER = 'var design_platform_css_default = "';
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-const OUT_DIR = '/Users/dhirawigata/.dsh/logs/kanban';
+const OUT_DIR = join(homedir(), '.dsh', 'logs', 'kanban');
 const REPORT_PATH = join(OUT_DIR, 'align-report.json');
 const PAGE_PATH = '/tmp/dsh-kanban-align-probe-page.html';
 const TEMP_DIR = mkdtempSync(join(tmpdir(), 'dsh-kanban-align-'));

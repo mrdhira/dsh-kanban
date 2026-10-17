@@ -59,7 +59,7 @@ const HERE = new URL('..', import.meta.url);
 const BUNDLE_PATH = fileURLToPath(new URL('lib/v1/client.js', HERE));
 const ASAR_PATH = '/Applications/DeepSeek Harness.app/Contents/Resources/app.asar';
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-const OUT_DIR = '/Users/dhirawigata/.dsh/logs/kanban';
+const OUT_DIR = join(homedir(), '.dsh', 'logs', 'kanban');
 const TEMP_DIR = join(tmpdir(), `dsh-kanban-capture-${process.pid}`);
 
 /**
